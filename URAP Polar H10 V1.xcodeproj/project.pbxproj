@@ -271,6 +271,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "URAP-Polar-H10-V1-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "CBE Pulse";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "App requires bluetooth to retrieve information from Polar H-10 Sensor";
 				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "This app needs Bluetooth to connect to your Polar H-10 heart rate sensor";
 				INFOPLIST_KEY_NSBluetoothWhileInUseUsageDescription = "App requires bluetooth to retrieve real-time information from Polar H-10 Sensor";
@@ -285,7 +287,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.dhanushe.URAP-Polar-H10-V1";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.dhanushe.CBE-Pulse";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -308,6 +310,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "URAP-Polar-H10-V1-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "CBE Pulse";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "App requires bluetooth to retrieve information from Polar H-10 Sensor";
 				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "This app needs Bluetooth to connect to your Polar H-10 heart rate sensor";
 				INFOPLIST_KEY_NSBluetoothWhileInUseUsageDescription = "App requires bluetooth to retrieve real-time information from Polar H-10 Sensor";
@@ -322,7 +326,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.dhanushe.URAP-Polar-H10-V1";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.dhanushe.CBE-Pulse";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;

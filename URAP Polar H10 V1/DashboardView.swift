@@ -16,12 +16,8 @@ struct DashboardView: View {
         NavigationView {
             ZStack {
                 // Background gradient
-                LinearGradient(
-                    colors: [Color.blue.opacity(0.1), Color.purple.opacity(0.1)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea()
+                Color(UIColor.systemGroupedBackground)
+                    .ignoresSafeArea()
                 
                 VStack(spacing: 30) {
                     // Connection Status Header
@@ -62,20 +58,20 @@ struct DashboardView: View {
             Circle()
                 .fill(statusColor)
                 .frame(width: 12, height: 12)
-            
+
             Text(polarManager.connectionState.displayText)
                 .font(.headline)
                 .foregroundColor(.secondary)
-            
+
             Spacer()
-            
+
             if !polarManager.isBluetoothOn {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundColor(.orange)
             }
         }
         .padding()
-        .background(Color.white.opacity(0.9))
+        .background(Color(UIColor.secondarySystemGroupedBackground))
         .cornerRadius(12)
         .shadow(radius: 2)
     }
@@ -118,12 +114,12 @@ struct DashboardView: View {
         VStack(spacing: 20) {
             Image(systemName: "heart.text.square")
                 .font(.system(size: 80))
-                .foregroundColor(.gray.opacity(0.5))
-            
+                .foregroundColor(.secondary)
+
             Text("No Device Connected")
                 .font(.title2)
                 .fontWeight(.semibold)
-            
+
             Text("Connect to your Polar H-10 to see real-time metrics")
                 .font(.body)
                 .foregroundColor(.secondary)
@@ -198,7 +194,7 @@ struct MetricCard: View {
     let icon: String
     let color: Color
     let isActive: Bool
-    
+
     var body: some View {
         HStack {
             // Icon
@@ -206,20 +202,20 @@ struct MetricCard: View {
                 .font(.system(size: 40))
                 .foregroundColor(color)
                 .frame(width: 60)
-            
+
             Spacer()
-            
+
             // Value
             VStack(alignment: .trailing, spacing: 4) {
                 Text(title)
                     .font(.subheadline)
                     .foregroundColor(.secondary)
-                
+
                 HStack(alignment: .lastTextBaseline, spacing: 4) {
                     Text(value)
                         .font(.system(size: 48, weight: .bold, design: .rounded))
-                        .foregroundColor(isActive ? .primary : .gray.opacity(0.3))
-                    
+                        .foregroundColor(isActive ? .primary : .secondary.opacity(0.3))
+
                     Text(unit)
                         .font(.title3)
                         .foregroundColor(.secondary)
@@ -227,7 +223,7 @@ struct MetricCard: View {
             }
         }
         .padding()
-        .background(Color.white.opacity(0.9))
+        .background(Color(UIColor.secondarySystemGroupedBackground))
         .cornerRadius(16)
         .shadow(color: isActive ? color.opacity(0.2) : Color.clear, radius: 8, x: 0, y: 4)
     }

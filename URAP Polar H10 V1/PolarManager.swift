@@ -19,44 +19,187 @@ import PolarBleSdk
 import RxSwift
 import CoreBluetooth
 
-/// Manages Polar H-10 device connection and real-time data streaming
+// MARK: - Data Point Models
+struct HeartRateDataPoint: Identifiable {
+    let id = UUID()
+    let timestamp: Date
+    let value: UInt8
+}
+
+struct RRIntervalDataPoint: Identifiable {
+    let id = UUID()
+    let timestamp: Date
+    let value: UInt16
+}
+
+// MARK: - Connected Sensor Model
+class ConnectedSensor: ObservableObject, Identifiable {
+    let id: String // device ID
+    let deviceName: String
+
+    @Published var connectionState: ConnectionState = .connecting
+    @Published var heartRate: UInt8 = 0
+    @Published var rrInterval: UInt16 = 0
+    @Published var batteryLevel: UInt = 0
+    @Published var lastUpdate: Date = Date()
+
+    // Historical data for graphing
+    @Published var heartRateHistory: [HeartRateDataPoint] = []
+    @Published var rrIntervalHistory: [RRIntervalDataPoint] = []
+
+    // Session statistics
+    @Published var sessionStartTime: Date?
+    @Published var minHeartRate: UInt8 = 0
+    @Published var maxHeartRate: UInt8 = 0
+    @Published var totalHeartRateSamples: Int = 0
+    private var heartRateSum: UInt64 = 0
+
+    // HRV metrics
+    @Published var sdnn: Double = 0  // Standard deviation of NN intervals
+    @Published var rmssd: Double = 0 // Root mean square of successive differences
+
+    var hrDisposable: Disposable?
+    var ppiDisposable: Disposable?
+
+    // Maximum data points to keep (5 minutes at ~1Hz)
+    private let maxDataPoints = 300
+
+    init(deviceId: String, deviceName: String) {
+        self.id = deviceId
+        self.deviceName = deviceName
+    }
+
+    var displayId: String {
+        // Show last 6 characters of device ID for brevity
+        String(id.suffix(6))
+    }
+
+    var isActive: Bool {
+        connectionState == .connected && heartRate > 0
+    }
+
+    var averageHeartRate: UInt8 {
+        guard totalHeartRateSamples > 0 else { return 0 }
+        return UInt8(heartRateSum / UInt64(totalHeartRateSamples))
+    }
+
+    var sessionDuration: TimeInterval {
+        guard let start = sessionStartTime else { return 0 }
+        return Date().timeIntervalSince(start)
+    }
+
+    func addHeartRateDataPoint(_ hr: UInt8) {
+        let dataPoint = HeartRateDataPoint(timestamp: Date(), value: hr)
+        heartRateHistory.append(dataPoint)
+
+        // Remove old data points beyond max
+        if heartRateHistory.count > maxDataPoints {
+            heartRateHistory.removeFirst(heartRateHistory.count - maxDataPoints)
+        }
+
+        // Update statistics
+        if sessionStartTime == nil {
+            sessionStartTime = Date()
+        }
+
+        if minHeartRate == 0 || hr < minHeartRate {
+            minHeartRate = hr
+        }
+        if hr > maxHeartRate {
+            maxHeartRate = hr
+        }
+
+        heartRateSum += UInt64(hr)
+        totalHeartRateSamples += 1
+    }
+
+    func addRRIntervalDataPoint(_ rr: UInt16) {
+        let dataPoint = RRIntervalDataPoint(timestamp: Date(), value: rr)
+        rrIntervalHistory.append(dataPoint)
+
+        // Remove old data points beyond max
+        if rrIntervalHistory.count > maxDataPoints {
+            rrIntervalHistory.removeFirst(rrIntervalHistory.count - maxDataPoints)
+        }
+
+        // Calculate HRV metrics
+        calculateHRVMetrics()
+    }
+
+    private func calculateHRVMetrics() {
+        // Need at least 5 RR intervals for meaningful HRV
+        guard rrIntervalHistory.count >= 5 else {
+            sdnn = 0
+            rmssd = 0
+            return
+        }
+
+        let recentRR = Array(rrIntervalHistory.suffix(60)) // Use last 60 intervals (~1 minute)
+        let values = recentRR.map { Double($0.value) }
+
+        // Calculate SDNN (Standard Deviation of NN intervals)
+        let mean = values.reduce(0, +) / Double(values.count)
+        let variance = values.map { pow($0 - mean, 2) }.reduce(0, +) / Double(values.count)
+        sdnn = sqrt(variance)
+
+        // Calculate RMSSD (Root Mean Square of Successive Differences)
+        var successiveDifferences: [Double] = []
+        for i in 1..<values.count {
+            let diff = values[i] - values[i-1]
+            successiveDifferences.append(pow(diff, 2))
+        }
+        if !successiveDifferences.isEmpty {
+            let meanSquare = successiveDifferences.reduce(0, +) / Double(successiveDifferences.count)
+            rmssd = sqrt(meanSquare)
+        }
+    }
+
+    func resetMetrics() {
+        heartRate = 0
+        rrInterval = 0
+        batteryLevel = 0
+        heartRateHistory.removeAll()
+        rrIntervalHistory.removeAll()
+        sessionStartTime = nil
+        minHeartRate = 0
+        maxHeartRate = 0
+        totalHeartRateSamples = 0
+        heartRateSum = 0
+        sdnn = 0
+        rmssd = 0
+    }
+
+    enum ConnectionState {
+        case connecting
+        case connected
+        case disconnected
+
+        var displayText: String {
+            switch self {
+            case .connecting: return "Connecting..."
+            case .connected: return "Connected"
+            case .disconnected: return "Disconnected"
+            }
+        }
+    }
+}
+
+/// Manages multiple Polar H-10 device connections and real-time data streaming
 class PolarManager: NSObject, ObservableObject {
-    
+
     // MARK: - Published Properties (Real-time Updates)
     @Published var isBluetoothOn = false
     @Published var isScanning = false
     @Published var discoveredDevices: [PolarDeviceInfo] = []
-    @Published var connectionState: ConnectionState = .disconnected
-    
-    // MARK: - Metrics
-    @Published var heartRate: UInt8 = 0
-    @Published var rrInterval: UInt16 = 0  // milliseconds
-    @Published var batteryLevel: UInt = 0   // 0-100%
-    
+    @Published var connectedSensors: [ConnectedSensor] = []
+
     // MARK: - Error Handling
     @Published var errorMessage: String?
-    
+
     // MARK: - Private Properties
     private var api: PolarBleApi!
     private let disposeBag = DisposeBag()
-    private var currentDeviceId: String?
-    private var hrDisposable: Disposable?
-    private var ppiDisposable: Disposable?
-    
-    // MARK: - Connection States
-    enum ConnectionState {
-        case disconnected
-        case connecting
-        case connected
-        
-        var displayText: String {
-            switch self {
-            case .disconnected: return "Disconnected"
-            case .connecting: return "Connecting..."
-            case .connected: return "Connected"
-            }
-        }
-    }
+    private var sensors: [String: ConnectedSensor] = [:] // deviceId -> sensor
     
     // MARK: - Initialization
     override init() {
@@ -113,91 +256,98 @@ class PolarManager: NSObject, ObservableObject {
     // MARK: - Connection Management
     func connect(to device: PolarDeviceInfo) {
         stopScanning()
-        currentDeviceId = device.deviceId
-        connectionState = .connecting
         errorMessage = nil
-        
+
+        // Create new sensor instance
+        let sensor = ConnectedSensor(deviceId: device.deviceId, deviceName: device.name)
+        sensors[device.deviceId] = sensor
+        updateConnectedSensorsList()
+
         do {
             try api.connectToDevice(device.deviceId)
         } catch {
             errorMessage = "Connection failed: \(error.localizedDescription)"
-            connectionState = .disconnected
+            sensors.removeValue(forKey: device.deviceId)
+            updateConnectedSensorsList()
         }
     }
-    
-    func disconnect() {
-        guard let deviceId = currentDeviceId else { return }
-        
+
+    func disconnect(deviceId: String) {
+        guard let sensor = sensors[deviceId] else { return }
+
         // Stop streaming
-        hrDisposable?.dispose()
-        ppiDisposable?.dispose()
-        
+        sensor.hrDisposable?.dispose()
+        sensor.ppiDisposable?.dispose()
+
         do {
             try api.disconnectFromDevice(deviceId)
         } catch {
             errorMessage = "Disconnect failed: \(error.localizedDescription)"
         }
-        
-        connectionState = .disconnected
-        currentDeviceId = nil
-        resetMetrics()
+
+        sensors.removeValue(forKey: deviceId)
+        updateConnectedSensorsList()
+    }
+
+    private func updateConnectedSensorsList() {
+        connectedSensors = Array(sensors.values).sorted { $0.id < $1.id }
     }
     
     // MARK: - Data Streaming
-    private func startHeartRateStream() {
-        guard let deviceId = currentDeviceId else { return }
-        
-        hrDisposable = api.startHrStreaming(deviceId)
+    private func startHeartRateStream(for deviceId: String) {
+        guard let sensor = sensors[deviceId] else { return }
+
+        sensor.hrDisposable = api.startHrStreaming(deviceId)
             .observe(on: MainScheduler.instance)
-            .subscribe { [weak self] event in
+            .subscribe { [weak self, weak sensor] event in
                 switch event {
                 case .next(let data):
-                    guard let hrData = data.first else { return }
-                    self?.heartRate = hrData.hr
-                    
-                    // RR intervals come with HR data - extract them here
-                    if let rrMs = hrData.rrsMs.first {
-                        self?.rrInterval = UInt16(rrMs)
+                    guard let hrData = data.first, let sensor = sensor else { return }
+                    DispatchQueue.main.async {
+                        sensor.heartRate = hrData.hr
+                        sensor.lastUpdate = Date()
+                        sensor.addHeartRateDataPoint(hrData.hr)
+
+                        // RR intervals come with HR data - extract them here
+                        if let rrMs = hrData.rrsMs.first {
+                            let rrValue = UInt16(rrMs)
+                            sensor.rrInterval = rrValue
+                            sensor.addRRIntervalDataPoint(rrValue)
+                        }
                     }
-                    
+
                 case .error(let error):
-                    // Only show critical errors, not streaming errors
-                    print("HR stream error: \(error.localizedDescription)")
-                    
+                    print("HR stream error for \(deviceId): \(error.localizedDescription)")
+
                 case .completed:
-                    print("HR stream completed")
+                    print("HR stream completed for \(deviceId)")
                 }
             }
     }
-    
-    private func startRRIntervalStream() {
-        guard let deviceId = currentDeviceId else { return }
-        
-        // Try to start PPI streaming, but don't show errors if it fails
-        // RR intervals are already available from HR stream
-        ppiDisposable = api.startPpiStreaming(deviceId)
+
+    private func startRRIntervalStream(for deviceId: String) {
+        guard let sensor = sensors[deviceId] else { return }
+
+        sensor.ppiDisposable = api.startPpiStreaming(deviceId)
             .observe(on: MainScheduler.instance)
-            .subscribe { [weak self] event in
+            .subscribe { [weak sensor] event in
                 switch event {
                 case .next(let data):
+                    guard let sensor = sensor else { return }
                     if let sample = data.samples.first {
-                        self?.rrInterval = sample.ppInMs
+                        DispatchQueue.main.async {
+                            sensor.rrInterval = sample.ppInMs
+                            sensor.addRRIntervalDataPoint(sample.ppInMs)
+                        }
                     }
-                    
+
                 case .error(let error):
-                    // PPI streaming often fails - just log it, don't show to user
-                    print("PPI stream not available: \(error.localizedDescription)")
-                    
+                    print("PPI stream not available for \(deviceId): \(error.localizedDescription)")
+
                 case .completed:
-                    print("PPI stream completed")
+                    print("PPI stream completed for \(deviceId)")
                 }
             }
-    }
-    
-    private func resetMetrics() {
-        heartRate = 0
-        rrInterval = 0
-        batteryLevel = 0
     }
 }
 
@@ -205,25 +355,31 @@ class PolarManager: NSObject, ObservableObject {
 extension PolarManager: PolarBleApiObserver {
     func deviceConnecting(_ polarDeviceInfo: PolarDeviceInfo) {
         DispatchQueue.main.async {
-            self.connectionState = .connecting
+            if let sensor = self.sensors[polarDeviceInfo.deviceId] {
+                sensor.connectionState = .connecting
+            }
         }
     }
-    
+
     func deviceConnected(_ polarDeviceInfo: PolarDeviceInfo) {
         DispatchQueue.main.async {
-            self.connectionState = .connected
+            if let sensor = self.sensors[polarDeviceInfo.deviceId] {
+                sensor.connectionState = .connected
+            }
             self.errorMessage = nil
+            self.updateConnectedSensorsList()
         }
     }
-    
+
     func deviceDisconnected(_ polarDeviceInfo: PolarDeviceInfo, pairingError: Bool) {
         DispatchQueue.main.async {
-            self.connectionState = .disconnected
-            self.currentDeviceId = nil
-            self.resetMetrics()
-            
+            if let sensor = self.sensors[polarDeviceInfo.deviceId] {
+                sensor.connectionState = .disconnected
+                sensor.resetMetrics()
+            }
+
             if pairingError {
-                self.errorMessage = "Pairing error. Please unpair and reconnect."
+                self.errorMessage = "Pairing error with \(polarDeviceInfo.name)"
             }
         }
     }
@@ -232,23 +388,25 @@ extension PolarManager: PolarBleApiObserver {
 // MARK: - PolarBleApiDeviceInfoObserver (Battery Updates)
 extension PolarManager: PolarBleApiDeviceInfoObserver {
     func batteryChargingStatusReceived(_ identifier: String, chargingStatus: PolarBleSdk.BleBasClient.ChargeState) {
-        
+
     }
-    
+
     func disInformationReceivedWithKeysAsStrings(_ identifier: String, key: String, value: String) {
-        
+
     }
-    
+
     func batteryLevelReceived(_ identifier: String, batteryLevel: UInt) {
         DispatchQueue.main.async {
-            self.batteryLevel = batteryLevel
+            if let sensor = self.sensors[identifier] {
+                sensor.batteryLevel = batteryLevel
+            }
         }
     }
-    
+
     func disInformationReceived(_ identifier: String, uuid: CBUUID, value: String) {
         // Device information received - not used but required by protocol
     }
-    
+
     func hrFeatureReady(_ identifier: String) {
         // HR feature ready - not used but required by protocol
     }
@@ -257,32 +415,32 @@ extension PolarManager: PolarBleApiDeviceInfoObserver {
 // MARK: - PolarBleApiDeviceFeaturesObserver (Feature Ready)
 extension PolarManager: PolarBleApiDeviceFeaturesObserver {
     func bleSdkFeatureReady(_ identifier: String, feature: PolarBleSdk.PolarBleSdkFeature) {
-        print("Feature ready: \(feature)")
-        
+        print("Feature ready: \(feature) for device: \(identifier)")
+
         DispatchQueue.main.async {
             switch feature {
             case .feature_hr:
-                // Start streaming HR and RR interval data
-                self.startHeartRateStream()
-                self.startRRIntervalStream()
-                
+                // Start streaming HR and RR interval data for this device
+                self.startHeartRateStream(for: identifier)
+                self.startRRIntervalStream(for: identifier)
+
             case .feature_battery_info:
-                print("Battery info feature ready")
-                
+                print("Battery info feature ready for \(identifier)")
+
             default:
                 break
             }
         }
     }
-    
+
     func ftpFeatureReady(_ identifier: String) {
         // FTP (File Transfer Protocol) feature ready - not used for basic metrics
         print("FTP feature ready for device: \(identifier)")
     }
-    
+
     func streamingFeaturesReady(_ identifier: String, streamingFeatures: Set<PolarBleSdk.PolarDeviceDataType>) {
         // Called when streaming features are available (ECG, ACC, etc.)
-        print("Streaming features ready: \(streamingFeatures)")
+        print("Streaming features ready for \(identifier): \(streamingFeatures)")
     }
 }
 

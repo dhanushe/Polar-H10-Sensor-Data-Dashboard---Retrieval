@@ -12,7 +12,7 @@ import SwiftUI
 struct PolarDashboardApp: App {
     var body: some Scene {
         WindowGroup {
-            DashboardView()
+            MainTabView()
         }
     }
 }

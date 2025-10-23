@@ -2,323 +2,465 @@
 //  SensorDetailView.swift
 //  URAP Polar H10 V1
 //
-//  Detailed view for individual sensor with real-time graphs and HRV analysis
+//  Modern sensor detail view with fixed graphs and beautiful UI
 //
 
 import SwiftUI
+import Combine
 import Charts
 
 struct SensorDetailView: View {
     @ObservedObject var sensor: ConnectedSensor
     @State private var selectedTimeRange: TimeRange = .twoMinutes
+    @State private var currentTime = Date()
+    @State private var selectedHRTimestamp: Date?
+    @State private var selectedRRTimestamp: Date?
     @Environment(\.dismiss) private var dismiss
 
+    let timer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
+
     var body: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                // Header Card
-                headerCard
+        ZStack {
+            AppTheme.darkGradient
+                .ignoresSafeArea()
 
-                // Primary Heart Rate Card
-                primaryHeartRateCard
+            ScrollView {
+                VStack(spacing: AppTheme.spacing.lg) {
+                    // Header Card
+                    headerCard
 
-                // Statistics Grid
-                statisticsGrid
+                    // Recording Controls
+                    recordingControlsCard
 
-                // HRV Metrics Card
-                hrvMetricsCard
+                    // Primary Heart Rate Display
+                    primaryHeartRateCard
 
-                // Time Range Selector
-                timeRangeSelector
+                    // Quick Stats
+                    quickStatsGrid
 
-                // Heart Rate Chart
-                heartRateChart
+                    // HRV Metrics
+                    hrvMetricsCard
 
-                // RR Interval Chart
-                rrIntervalChart
-
-                // Session Info
-                sessionInfoCard
+                    // Charts Section
+                    chartsSection
+                }
+                .padding()
             }
-            .padding()
         }
-        .background(Color(UIColor.systemGroupedBackground))
         .navigationTitle(sensor.deviceName)
         .navigationBarTitleDisplayMode(.inline)
+        .onReceive(timer) { _ in
+            if sensor.recordingState == .recording {
+                currentTime = Date()
+            }
+        }
     }
 
     // MARK: - Header Card
+
     private var headerCard: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Device ID: \(sensor.displayId)")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 8, height: 8)
-
-                    Text(sensor.connectionState.displayText)
-                        .font(.subheadline)
+        GlassCard {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Device ID: \(sensor.displayId)")
+                        .font(.caption)
                         .foregroundColor(.secondary)
 
-                    if sensor.sessionDuration > 0 {
-                        Text("•")
-                            .foregroundColor(.secondary)
-                        Text(formatDuration(sensor.sessionDuration))
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(statusColor)
+                            .frame(width: 8, height: 8)
+
+                        Text(sensor.connectionState.displayText)
                             .font(.subheadline)
                             .foregroundColor(.secondary)
+
+                        if currentSessionDuration > 0 {
+                            Text("•")
+                                .foregroundColor(.secondary)
+                            Text(formatDuration(currentSessionDuration))
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+                }
+
+                Spacer()
+            }
+            .padding()
+        }
+    }
+
+    // MARK: - Recording Controls
+
+    private var recordingControlsCard: some View {
+        GlassCard {
+            VStack(spacing: AppTheme.spacing.md) {
+                HStack {
+                    RecordingStatusBadge(state: sensor.recordingState)
+                    Spacer()
+                    if sensor.recordingState == .recording {
+                        PulsingDot(color: .red)
+                    }
+                }
+
+                HStack(spacing: AppTheme.spacing.sm) {
+                    GradientButton(
+                        title: sensor.recordingState == .paused ? "Resume" : "Start",
+                        icon: sensor.recordingState == .paused ? "play.fill" : "record.circle",
+                        gradient: LinearGradient(colors: [.green, .green.opacity(0.8)], startPoint: .topLeading, endPoint: .bottomTrailing),
+                        isDisabled: sensor.recordingState == .recording,
+                        isCompact: true
+                    ) {
+                        sensor.startRecording()
+                    }
+
+                    GradientButton(
+                        title: "Pause",
+                        icon: "pause.fill",
+                        gradient: LinearGradient(colors: [.orange, .orange.opacity(0.8)], startPoint: .topLeading, endPoint: .bottomTrailing),
+                        isDisabled: sensor.recordingState != .recording,
+                        isCompact: true
+                    ) {
+                        sensor.pauseRecording()
+                    }
+
+                    GradientButton(
+                        title: "Stop",
+                        icon: "stop.fill",
+                        gradient: LinearGradient(colors: [.red, .red.opacity(0.8)], startPoint: .topLeading, endPoint: .bottomTrailing),
+                        isDisabled: sensor.recordingState == .idle,
+                        isCompact: true
+                    ) {
+                        sensor.stopRecording()
                     }
                 }
             }
-
-            Spacer()
+            .padding()
         }
-        .padding()
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .cornerRadius(12)
     }
 
     // MARK: - Primary Heart Rate Card
+
     private var primaryHeartRateCard: some View {
-        VStack(spacing: 12) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "heart.fill")
-                    .font(.title)
-                    .foregroundColor(.red)
-                    .symbolEffect(.pulse, options: .repeating, value: sensor.isActive)
+        GlassCard {
+            VStack(spacing: AppTheme.spacing.md) {
+                AnimatedMetricView(
+                    value: "\(sensor.heartRate)",
+                    label: "Heart Rate (BPM)",
+                    icon: "heart.fill",
+                    color: .red,
+                    showPulse: sensor.isActive
+                )
 
-                Text("\(sensor.heartRate)")
-                    .font(.system(size: 64, weight: .bold, design: .rounded))
-                    .foregroundColor(sensor.isActive ? .primary : .secondary.opacity(0.3))
-
-                Text("BPM")
-                    .font(.title2)
-                    .foregroundColor(.secondary)
-                    .padding(.bottom, 8)
+                if !sensor.isActive {
+                    Text("Waiting for data...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
-
-            if !sensor.isActive {
-                Text("Waiting for data...")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
+            .padding(AppTheme.spacing.lg)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color(UIColor.secondarySystemGroupedBackground))
-                .shadow(color: sensor.isActive ? Color.red.opacity(0.2) : Color.clear, radius: 12, x: 0, y: 4)
-        )
     }
 
-    // MARK: - Statistics Grid
-    private var statisticsGrid: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                StatCard(title: "Min", value: "\(sensor.minHeartRate)", unit: "BPM", color: .blue)
-                StatCard(title: "Max", value: "\(sensor.maxHeartRate)", unit: "BPM", color: .red)
-                StatCard(title: "Avg", value: "\(sensor.averageHeartRate)", unit: "BPM", color: .green)
-            }
+    // MARK: - Quick Stats Grid
 
-            HStack(spacing: 12) {
-                StatCard(title: "RR Interval", value: "\(sensor.rrInterval)", unit: "ms", color: .blue)
-                    .frame(maxWidth: .infinity)
-
-                BatteryCard(level: sensor.batteryLevel)
-                    .frame(maxWidth: .infinity)
-            }
+    private var quickStatsGrid: some View {
+        HStack(spacing: AppTheme.spacing.sm) {
+            QuickStatCard(label: "Min", value: "\(sensor.minHeartRate)", unit: "BPM", color: .blue)
+                .frame(maxWidth: .infinity)
+            QuickStatCard(label: "Avg", value: "\(sensor.averageHeartRate)", unit: "BPM", color: .green)
+                .frame(maxWidth: .infinity)
+            QuickStatCard(label: "Max", value: "\(sensor.maxHeartRate)", unit: "BPM", color: .red)
+                .frame(maxWidth: .infinity)
         }
     }
 
     // MARK: - HRV Metrics Card
+
     private var hrvMetricsCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Heart Rate Variability (HRV)")
-                .font(.headline)
-                .foregroundColor(.primary)
+        GlassCard {
+            VStack(alignment: .leading, spacing: AppTheme.spacing.md) {
+                GradientText("HRV Analysis", gradient: AppTheme.primaryGradient, font: .headline)
 
-            if sensor.sdnn > 0 {
-                VStack(spacing: 12) {
-                    HRVMetricRow(
-                        name: "SDNN",
-                        value: sensor.sdnn,
-                        interpretation: interpretSDNN(sensor.sdnn),
-                        description: "Standard deviation of RR intervals"
-                    )
+                // Window Selector
+                VStack(alignment: .leading, spacing: AppTheme.spacing.sm) {
+                    Text("Analysis Window")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
 
+                    Picker("Window", selection: $sensor.hrvWindow) {
+                        ForEach(HRVWindow.allCases) { window in
+                            Text(window.displayName).tag(window)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: sensor.hrvWindow) { oldValue, newValue in
+                        sensor.calculateHRVMetrics()
+                    }
+
+                    if sensor.hrvSampleCount > 0 {
+                        Text("\(sensor.hrvSampleCount) RR intervals analyzed")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if sensor.sdnn > 0 {
                     Divider()
 
-                    HRVMetricRow(
-                        name: "RMSSD",
-                        value: sensor.rmssd,
-                        interpretation: interpretRMSSD(sensor.rmssd),
-                        description: "Root mean square of successive differences"
-                    )
+                    VStack(spacing: AppTheme.spacing.sm) {
+                        HRVMetricDisplay(
+                            name: "SDNN",
+                            value: sensor.sdnn,
+                            interpretation: interpretSDNN(sensor.sdnn),
+                            description: "Standard deviation of RR intervals"
+                        )
+
+                        HRVMetricDisplay(
+                            name: "RMSSD",
+                            value: sensor.rmssd,
+                            interpretation: interpretRMSSD(sensor.rmssd),
+                            description: "Root mean square of successive differences"
+                        )
+                    }
+                } else {
+                    HStack {
+                        Image(systemName: "info.circle")
+                            .foregroundColor(.secondary)
+                        Text("Collecting data for HRV analysis...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
-            } else {
-                HStack {
-                    Image(systemName: "info.circle")
-                        .foregroundColor(.secondary)
-                    Text("Collecting data for HRV analysis...")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+            }
+            .padding(AppTheme.spacing.lg)
+        }
+    }
+
+    // MARK: - Charts Section
+
+    private var chartsSection: some View {
+        VStack(spacing: AppTheme.spacing.lg) {
+            // Time Range Selector
+            timeRangeSelector
+
+            // Heart Rate Chart
+            GlassCard {
+                VStack(alignment: .leading, spacing: AppTheme.spacing.md) {
+                    Text("Heart Rate")
+                        .font(.headline)
+                        .foregroundColor(.primary)
+
+                    if filteredHeartRateData.isEmpty {
+                        EmptyChartPlaceholder(message: "No heart rate data")
+                    } else {
+                        Chart(filteredHeartRateData) { dataPoint in
+                            LineMark(
+                                x: .value("Time", dataPoint.timestamp),
+                                y: .value("BPM", dataPoint.value)
+                            )
+                            .foregroundStyle(
+                                LinearGradient(colors: [.red, .pink], startPoint: .leading, endPoint: .trailing)
+                            )
+                            .interpolationMethod(.catmullRom)
+
+                            AreaMark(
+                                x: .value("Time", dataPoint.timestamp),
+                                y: .value("BPM", dataPoint.value)
+                            )
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [.red.opacity(0.3), .pink.opacity(0.1)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .interpolationMethod(.catmullRom)
+
+                            // Selection indicator
+                            if let selectedHRTimestamp, let selectedValue = findNearestHeartRateValue(for: selectedHRTimestamp) {
+                                RuleMark(x: .value("Selected", selectedHRTimestamp))
+                                    .foregroundStyle(Color.white.opacity(0.5))
+                                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 5]))
+
+                                PointMark(
+                                    x: .value("Selected", selectedHRTimestamp),
+                                    y: .value("BPM", selectedValue)
+                                )
+                                .foregroundStyle(.red)
+                                .symbolSize(36)
+                            }
+                        }
+                        .chartXSelection(value: $selectedHRTimestamp)
+                        .chartXAxis {
+                            AxisMarks(values: .stride(by: .second, count: 30)) {
+                                AxisGridLine()
+                                AxisValueLabel(format: .dateTime.minute().second(), centered: true)
+                                    .font(.caption2)
+                            }
+                        }
+                        .chartYAxis {
+                            AxisMarks(position: .leading) {
+                                AxisGridLine()
+                                AxisValueLabel()
+                                    .font(.caption2)
+                            }
+                        }
+                        .chartOverlay { chartProxy in
+                            GeometryReader { geometry in
+                                if let selectedHRTimestamp, let selectedValue = findNearestHeartRateValue(for: selectedHRTimestamp) {
+                                    let dateInterval = chartProxy.plotAreaSize.width / CGFloat(filteredHeartRateData.count)
+                                    if let xPosition = chartProxy.position(forX: selectedHRTimestamp) {
+                                        ChartTooltipBubble(
+                                            value: "\(selectedValue)",
+                                            unit: "BPM",
+                                            timestamp: formatTooltipTime(selectedHRTimestamp),
+                                            color: .red
+                                        )
+                                        .position(
+                                            x: xPosition,
+                                            y: -30
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        .frame(height: 180)
+                    }
                 }
-                .padding(.vertical, 8)
+                .padding(AppTheme.spacing.lg)
+            }
+
+            // RR Interval Chart
+            GlassCard {
+                VStack(alignment: .leading, spacing: AppTheme.spacing.md) {
+                    Text("RR Interval")
+                        .font(.headline)
+                        .foregroundColor(.primary)
+
+                    if filteredRRIntervalData.isEmpty {
+                        EmptyChartPlaceholder(message: "No RR interval data")
+                    } else {
+                        Chart(filteredRRIntervalData) { dataPoint in
+                            LineMark(
+                                x: .value("Time", dataPoint.timestamp),
+                                y: .value("ms", dataPoint.value)
+                            )
+                            .foregroundStyle(
+                                LinearGradient(colors: [.blue, .cyan], startPoint: .leading, endPoint: .trailing)
+                            )
+                            .interpolationMethod(.catmullRom)
+
+                            AreaMark(
+                                x: .value("Time", dataPoint.timestamp),
+                                y: .value("ms", dataPoint.value)
+                            )
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [.blue.opacity(0.3), .cyan.opacity(0.1)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .interpolationMethod(.catmullRom)
+
+                            // Selection indicator
+                            if let selectedRRTimestamp, let selectedValue = findNearestRRIntervalValue(for: selectedRRTimestamp) {
+                                RuleMark(x: .value("Selected", selectedRRTimestamp))
+                                    .foregroundStyle(Color.white.opacity(0.5))
+                                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 5]))
+
+                                PointMark(
+                                    x: .value("Selected", selectedRRTimestamp),
+                                    y: .value("ms", selectedValue)
+                                )
+                                .foregroundStyle(.blue)
+                                .symbolSize(36)
+                            }
+                        }
+                        .chartXSelection(value: $selectedRRTimestamp)
+                        .chartXAxis {
+                            AxisMarks(values: .stride(by: .second, count: 30)) {
+                                AxisGridLine()
+                                AxisValueLabel(format: .dateTime.minute().second(), centered: true)
+                                    .font(.caption2)
+                            }
+                        }
+                        .chartYAxis {
+                            AxisMarks(position: .leading) {
+                                AxisGridLine()
+                                AxisValueLabel()
+                                    .font(.caption2)
+                            }
+                        }
+                        .chartOverlay { chartProxy in
+                            GeometryReader { geometry in
+                                if let selectedRRTimestamp, let selectedValue = findNearestRRIntervalValue(for: selectedRRTimestamp) {
+                                    let dateInterval = chartProxy.plotAreaSize.width / CGFloat(filteredRRIntervalData.count)
+                                    if let xPosition = chartProxy.position(forX: selectedRRTimestamp) {
+                                        ChartTooltipBubble(
+                                            value: "\(selectedValue)",
+                                            unit: "ms",
+                                            timestamp: formatTooltipTime(selectedRRTimestamp),
+                                            color: .blue
+                                        )
+                                        .position(
+                                            x: xPosition,
+                                            y: -30
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        .frame(height: 180)
+                    }
+                }
+                .padding(AppTheme.spacing.lg)
             }
         }
-        .padding()
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .cornerRadius(12)
     }
 
     // MARK: - Time Range Selector
+
     private var timeRangeSelector: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: AppTheme.spacing.sm) {
             ForEach(TimeRange.allCases, id: \.self) { range in
                 Button(action: {
                     selectedTimeRange = range
                 }) {
                     Text(range.displayName)
-                        .font(.subheadline)
+                        .font(.caption)
                         .fontWeight(selectedTimeRange == range ? .semibold : .regular)
-                        .foregroundColor(selectedTimeRange == range ? .white : .primary)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
+                        .foregroundColor(selectedTimeRange == range ? .white : .secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
                         .background(
                             selectedTimeRange == range ?
-                            Color.blue :
-                            Color(UIColor.secondarySystemGroupedBackground)
+                            AppTheme.primaryGradient :
+                            LinearGradient(colors: [AppTheme.glassMaterial], startPoint: .top, endPoint: .bottom)
                         )
-                        .cornerRadius(8)
+                        .cornerRadius(AppTheme.cornerRadius.sm)
                 }
             }
         }
-    }
-
-    // MARK: - Heart Rate Chart
-    private var heartRateChart: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Heart Rate")
-                .font(.headline)
-                .padding(.horizontal)
-
-            if filteredHeartRateData.isEmpty {
-                EmptyChartView(message: "No heart rate data yet")
-            } else {
-                Chart(filteredHeartRateData) { dataPoint in
-                    LineMark(
-                        x: .value("Time", dataPoint.timestamp),
-                        y: .value("BPM", dataPoint.value)
-                    )
-                    .foregroundStyle(.red)
-                    .interpolationMethod(.catmullRom)
-
-                    AreaMark(
-                        x: .value("Time", dataPoint.timestamp),
-                        y: .value("BPM", dataPoint.value)
-                    )
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [.red.opacity(0.3), .red.opacity(0.05)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .interpolationMethod(.catmullRom)
-                }
-                .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: 5)) { _ in
-                        AxisGridLine()
-                        AxisValueLabel(format: .dateTime.hour().minute().second())
-                    }
-                }
-                .chartYAxis {
-                    AxisMarks(position: .leading)
-                }
-                .frame(height: 200)
-                .padding()
-            }
-        }
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .cornerRadius(12)
-    }
-
-    // MARK: - RR Interval Chart
-    private var rrIntervalChart: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("RR Interval")
-                .font(.headline)
-                .padding(.horizontal)
-
-            if filteredRRIntervalData.isEmpty {
-                EmptyChartView(message: "No RR interval data yet")
-            } else {
-                Chart(filteredRRIntervalData) { dataPoint in
-                    LineMark(
-                        x: .value("Time", dataPoint.timestamp),
-                        y: .value("ms", dataPoint.value)
-                    )
-                    .foregroundStyle(.blue)
-                    .interpolationMethod(.catmullRom)
-
-                    AreaMark(
-                        x: .value("Time", dataPoint.timestamp),
-                        y: .value("ms", dataPoint.value)
-                    )
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [.blue.opacity(0.3), .blue.opacity(0.05)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .interpolationMethod(.catmullRom)
-                }
-                .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: 5)) { _ in
-                        AxisGridLine()
-                        AxisValueLabel(format: .dateTime.hour().minute().second())
-                    }
-                }
-                .chartYAxis {
-                    AxisMarks(position: .leading)
-                }
-                .frame(height: 200)
-                .padding()
-            }
-        }
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .cornerRadius(12)
-    }
-
-    // MARK: - Session Info Card
-    private var sessionInfoCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Session Information")
-                .font(.headline)
-
-            VStack(spacing: 8) {
-                InfoRow(label: "Connected Since", value: formatTimestamp(sensor.sessionStartTime))
-                InfoRow(label: "Data Points", value: "\(sensor.heartRateHistory.count) HR / \(sensor.rrIntervalHistory.count) RR")
-                InfoRow(label: "Duration", value: formatDuration(sensor.sessionDuration))
-            }
-        }
-        .padding()
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .cornerRadius(12)
     }
 
     // MARK: - Computed Properties
+
     private var statusColor: Color {
         switch sensor.connectionState {
         case .connected: return sensor.isActive ? .green : .yellow
         case .connecting: return .orange
         case .disconnected: return .red
         }
+    }
+
+    private var currentSessionDuration: TimeInterval {
+        // Use currentTime to force SwiftUI to recalculate
+        _ = currentTime
+        return sensor.sessionDuration
     }
 
     private var filteredHeartRateData: [HeartRateDataPoint] {
@@ -332,22 +474,11 @@ struct SensorDetailView: View {
     }
 
     // MARK: - Helper Functions
+
     private func formatDuration(_ duration: TimeInterval) -> String {
         let minutes = Int(duration) / 60
         let seconds = Int(duration) % 60
-        if minutes > 0 {
-            return String(format: "%dm %ds", minutes, seconds)
-        } else {
-            return String(format: "%ds", seconds)
-        }
-    }
-
-    private func formatTimestamp(_ date: Date?) -> String {
-        guard let date = date else { return "N/A" }
-        let formatter = DateFormatter()
-        formatter.timeStyle = .medium
-        formatter.dateStyle = .none
-        return formatter.string(from: date)
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 
     private func interpretSDNN(_ value: Double) -> (String, Color) {
@@ -363,9 +494,123 @@ struct SensorDetailView: View {
         if value > 15 { return ("Fair", .orange) }
         return ("Low", .red)
     }
+
+    // MARK: - Chart Interaction Helpers
+
+    private func findNearestHeartRateValue(for timestamp: Date) -> UInt8? {
+        guard !filteredHeartRateData.isEmpty else { return nil }
+        return filteredHeartRateData.min(by: { abs($0.timestamp.timeIntervalSince(timestamp)) < abs($1.timestamp.timeIntervalSince(timestamp)) })?.value
+    }
+
+    private func findNearestRRIntervalValue(for timestamp: Date) -> UInt16? {
+        guard !filteredRRIntervalData.isEmpty else { return nil }
+        return filteredRRIntervalData.min(by: { abs($0.timestamp.timeIntervalSince(timestamp)) < abs($1.timestamp.timeIntervalSince(timestamp)) })?.value
+    }
+
+    private func formatTooltipTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: date)
+    }
+}
+
+// MARK: - Quick Stat Card
+
+struct QuickStatCard: View {
+    let label: String
+    let value: String
+    let unit: String
+    let color: Color
+
+    var body: some View {
+        GlassCard {
+            VStack(spacing: 8) {
+                Text(label)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .foregroundColor(.secondary)
+
+                Text(value)
+                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .foregroundColor(color)
+
+                Text(unit)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, AppTheme.spacing.lg)
+            .padding(.horizontal, AppTheme.spacing.md)
+        }
+    }
+}
+
+// MARK: - HRV Metric Display
+
+struct HRVMetricDisplay: View {
+    let name: String
+    let value: Double
+    let interpretation: (String, Color)
+    let description: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(name)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+
+                Spacer()
+
+                Text(String(format: "%.1f ms", value))
+                    .font(.title3)
+                    .fontWeight(.bold)
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+
+                Text(interpretation.0)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(interpretation.1)
+                    .cornerRadius(6)
+            }
+
+            Text(description)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+        }
+    }
+}
+
+// MARK: - Empty Chart Placeholder
+
+struct EmptyChartPlaceholder: View {
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "chart.line.uptrend.xyaxis")
+                .font(.system(size: 40))
+                .foregroundColor(.secondary.opacity(0.5))
+
+            Text(message)
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+        }
+        .frame(height: 180)
+        .frame(maxWidth: .infinity)
+    }
 }
 
 // MARK: - Time Range Enum
+
 enum TimeRange: CaseIterable {
     case thirtySeconds
     case oneMinute
@@ -391,144 +636,50 @@ enum TimeRange: CaseIterable {
     }
 }
 
-// MARK: - Supporting Views
+// MARK: - Chart Tooltip Bubble
 
-struct StatCard: View {
-    let title: String
+struct ChartTooltipBubble: View {
     let value: String
     let unit: String
+    let timestamp: String
     let color: Color
 
     var body: some View {
-        VStack(spacing: 8) {
-            Text(title)
-                .font(.caption)
-                .foregroundColor(.secondary)
-
+        VStack(spacing: 4) {
             Text(value)
-                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .font(.system(size: 24, weight: .bold, design: .rounded))
                 .foregroundColor(color)
+                .lineLimit(1)
 
             Text(unit)
                 .font(.caption2)
                 .foregroundColor(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .cornerRadius(12)
-    }
-}
+                .lineLimit(1)
 
-struct BatteryCard: View {
-    let level: UInt
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Text("Battery")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            HStack(spacing: 4) {
-                Image(systemName: batteryIcon)
-                    .font(.title2)
-                    .foregroundColor(batteryColor)
-
-                Text("\(level)%")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
-            }
-
-            Text(" ")
+            Text(timestamp)
                 .font(.caption2)
+                .foregroundColor(.secondary)
+                .monospacedDigit()
+                .lineLimit(1)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .cornerRadius(12)
-    }
-
-    private var batteryIcon: String {
-        if level > 75 { return "battery.100" }
-        if level > 50 { return "battery.75" }
-        if level > 25 { return "battery.50" }
-        if level > 10 { return "battery.25" }
-        return "battery.0"
-    }
-
-    private var batteryColor: Color {
-        level > 20 ? .green : .red
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: 4)
     }
 }
 
-struct HRVMetricRow: View {
-    let name: String
-    let value: Double
-    let interpretation: (String, Color)
-    let description: String
+// MARK: - Preview
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(name)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-
-                Spacer()
-
-                Text(String(format: "%.1f ms", value))
-                    .font(.title3)
-                    .fontWeight(.bold)
-
-                Text(interpretation.0)
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(interpretation.1)
-                    .cornerRadius(6)
-            }
-
-            Text(description)
-                .font(.caption)
-                .foregroundColor(.secondary)
+struct SensorDetailView_Previews: PreviewProvider {
+    static var previews: some View {
+        NavigationView {
+            SensorDetailView(sensor: ConnectedSensor(deviceId: "12345", deviceName: "Polar H10"))
         }
-    }
-}
-
-struct InfoRow: View {
-    let label: String
-    let value: String
-
-    var body: some View {
-        HStack {
-            Text(label)
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-
-            Spacer()
-
-            Text(value)
-                .font(.subheadline)
-                .fontWeight(.medium)
-        }
-    }
-}
-
-struct EmptyChartView: View {
-    let message: String
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "chart.line.uptrend.xyaxis")
-                .font(.system(size: 40))
-                .foregroundColor(.secondary.opacity(0.5))
-
-            Text(message)
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-        }
-        .frame(height: 200)
-        .frame(maxWidth: .infinity)
+        .preferredColorScheme(.dark)
     }
 }

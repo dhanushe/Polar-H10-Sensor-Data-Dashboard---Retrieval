@@ -23,13 +23,68 @@ import CoreBluetooth
 struct HeartRateDataPoint: Identifiable {
     let id = UUID()
     let timestamp: Date
+    let monotonicTimestamp: TimeInterval  // High-precision monotonic time from CACurrentMediaTime()
     let value: UInt8
 }
 
 struct RRIntervalDataPoint: Identifiable {
     let id = UUID()
     let timestamp: Date
+    let monotonicTimestamp: TimeInterval  // High-precision monotonic time from CACurrentMediaTime()
     let value: UInt16
+}
+
+// MARK: - HRV Window Configuration
+enum HRVWindow: String, CaseIterable, Identifiable {
+    case ultraShort1min = "1 Minute"
+    case ultraShort2min = "2 Minutes"
+    case short5min = "5 Minutes"
+    case extended10min = "10 Minutes"
+
+    var id: String { rawValue }
+
+    var seconds: TimeInterval {
+        switch self {
+        case .ultraShort1min: return 60
+        case .ultraShort2min: return 120
+        case .short5min: return 300
+        case .extended10min: return 600
+        }
+    }
+
+    var displayName: String { rawValue }
+
+    var description: String {
+        switch self {
+        case .ultraShort1min: return "Ultra-short term (1 min)"
+        case .ultraShort2min: return "Ultra-short term (2 min)"
+        case .short5min: return "Short-term (5 min) - Research standard"
+        case .extended10min: return "Extended (10 min)"
+        }
+    }
+}
+
+// MARK: - Recording State
+enum RecordingState {
+    case idle       // Not recording, sensor may be connected but data not being saved
+    case recording  // Actively recording data
+    case paused     // Recording paused, can resume
+
+    var displayText: String {
+        switch self {
+        case .idle: return "Ready to Record"
+        case .recording: return "Recording"
+        case .paused: return "Paused"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .idle: return "circle"
+        case .recording: return "record.circle.fill"
+        case .paused: return "pause.circle.fill"
+        }
+    }
 }
 
 // MARK: - Connected Sensor Model
@@ -38,6 +93,7 @@ class ConnectedSensor: ObservableObject, Identifiable {
     let deviceName: String
 
     @Published var connectionState: ConnectionState = .connecting
+    @Published var recordingState: RecordingState = .idle
     @Published var heartRate: UInt8 = 0
     @Published var rrInterval: UInt16 = 0
     @Published var batteryLevel: UInt = 0
@@ -54,9 +110,15 @@ class ConnectedSensor: ObservableObject, Identifiable {
     @Published var totalHeartRateSamples: Int = 0
     private var heartRateSum: UInt64 = 0
 
+    // High-precision timing for research-grade accuracy
+    private var timingSession: TimingSession?
+    var sessionStartMonotonicTime: TimeInterval?  // Monotonic timestamp of session start
+
     // HRV metrics
     @Published var sdnn: Double = 0  // Standard deviation of NN intervals
     @Published var rmssd: Double = 0 // Root mean square of successive differences
+    @Published var hrvWindow: HRVWindow = .short5min  // Time window for HRV calculation
+    @Published var hrvSampleCount: Int = 0  // Actual number of RR intervals used in last HRV calculation
 
     var hrDisposable: Disposable?
     var ppiDisposable: Disposable?
@@ -84,12 +146,64 @@ class ConnectedSensor: ObservableObject, Identifiable {
     }
 
     var sessionDuration: TimeInterval {
+        // Use monotonic time for accurate duration measurement
+        if let session = timingSession {
+            return session.elapsedTime()
+        }
+        // Fallback to wall-clock time if session not initialized
         guard let start = sessionStartTime else { return 0 }
         return Date().timeIntervalSince(start)
     }
 
+    // MARK: - Recording Controls
+
+    func startRecording() {
+        recordingState = .recording
+
+        // Initialize or resume timing session
+        if timingSession == nil {
+            timingSession = TimingSession(sessionId: id)
+            sessionStartTime = timingSession?.startWallTime
+            sessionStartMonotonicTime = timingSession?.startMonotonicTime
+        }
+    }
+
+    func pauseRecording() {
+        recordingState = .paused
+    }
+
+    func stopRecording() {
+        recordingState = .idle
+        // Note: We keep the data and timing session intact so user can review
+        // Call resetMetrics() if you want to clear everything
+    }
+
+    // MARK: - Data Collection
+
     func addHeartRateDataPoint(_ hr: UInt8) {
-        let dataPoint = HeartRateDataPoint(timestamp: Date(), value: hr)
+        // Always update current heart rate for live display
+        heartRate = hr
+        lastUpdate = Date()
+
+        // Only save data points when actively recording
+        guard recordingState == .recording else { return }
+
+        // Initialize timing session on first recorded data point
+        if timingSession == nil {
+            timingSession = TimingSession(sessionId: id)
+            sessionStartTime = timingSession?.startWallTime
+            sessionStartMonotonicTime = timingSession?.startMonotonicTime
+        }
+
+        // Capture high-precision timestamp
+        let monotonicTime = timingSession?.now() ?? PrecisionTimer.shared.now()
+        let wallTime = timingSession?.monotonicToDate(monotonicTime) ?? Date()
+
+        let dataPoint = HeartRateDataPoint(
+            timestamp: wallTime,
+            monotonicTimestamp: monotonicTime,
+            value: hr
+        )
         heartRateHistory.append(dataPoint)
 
         // Remove old data points beyond max
@@ -98,10 +212,6 @@ class ConnectedSensor: ObservableObject, Identifiable {
         }
 
         // Update statistics
-        if sessionStartTime == nil {
-            sessionStartTime = Date()
-        }
-
         if minHeartRate == 0 || hr < minHeartRate {
             minHeartRate = hr
         }
@@ -114,7 +224,28 @@ class ConnectedSensor: ObservableObject, Identifiable {
     }
 
     func addRRIntervalDataPoint(_ rr: UInt16) {
-        let dataPoint = RRIntervalDataPoint(timestamp: Date(), value: rr)
+        // Always update current RR interval for live display
+        rrInterval = rr
+
+        // Only save data points when actively recording
+        guard recordingState == .recording else { return }
+
+        // Initialize timing session on first recorded data point (if not already done by HR)
+        if timingSession == nil {
+            timingSession = TimingSession(sessionId: id)
+            sessionStartTime = timingSession?.startWallTime
+            sessionStartMonotonicTime = timingSession?.startMonotonicTime
+        }
+
+        // Capture high-precision timestamp
+        let monotonicTime = timingSession?.now() ?? PrecisionTimer.shared.now()
+        let wallTime = timingSession?.monotonicToDate(monotonicTime) ?? Date()
+
+        let dataPoint = RRIntervalDataPoint(
+            timestamp: wallTime,
+            monotonicTimestamp: monotonicTime,
+            value: rr
+        )
         rrIntervalHistory.append(dataPoint)
 
         // Remove old data points beyond max
@@ -126,16 +257,34 @@ class ConnectedSensor: ObservableObject, Identifiable {
         calculateHRVMetrics()
     }
 
-    private func calculateHRVMetrics() {
+    func calculateHRVMetrics() {
         // Need at least 5 RR intervals for meaningful HRV
         guard rrIntervalHistory.count >= 5 else {
             sdnn = 0
             rmssd = 0
+            hrvSampleCount = 0
             return
         }
 
-        let recentRR = Array(rrIntervalHistory.suffix(60)) // Use last 60 intervals (~1 minute)
-        let values = recentRR.map { Double($0.value) }
+        // Get current time and calculate cutoff based on selected window
+        let currentTime = timingSession?.now() ?? PrecisionTimer.shared.now()
+        let windowSeconds = hrvWindow.seconds
+        let cutoffTime = currentTime - windowSeconds
+
+        // Filter RR intervals within the time window using monotonic timestamps
+        let windowedRR = rrIntervalHistory.filter { $0.monotonicTimestamp >= cutoffTime }
+
+        // Need sufficient data in the window
+        guard windowedRR.count >= 5 else {
+            sdnn = 0
+            rmssd = 0
+            hrvSampleCount = 0
+            return
+        }
+
+        // Extract RR interval values
+        let values = windowedRR.map { Double($0.value) }
+        hrvSampleCount = values.count
 
         // Calculate SDNN (Standard Deviation of NN intervals)
         let mean = values.reduce(0, +) / Double(values.count)
@@ -167,6 +316,11 @@ class ConnectedSensor: ObservableObject, Identifiable {
         heartRateSum = 0
         sdnn = 0
         rmssd = 0
+        hrvSampleCount = 0
+
+        // Reset high-precision timing session
+        timingSession = nil
+        sessionStartMonotonicTime = nil
     }
 
     enum ConnectionState {
@@ -192,6 +346,9 @@ class PolarManager: NSObject, ObservableObject {
     @Published var isScanning = false
     @Published var discoveredDevices: [PolarDeviceInfo] = []
     @Published var connectedSensors: [ConnectedSensor] = []
+
+    // MARK: - Global Recording State
+    @Published var globalRecordingState: RecordingState = .idle
 
     // MARK: - Error Handling
     @Published var errorMessage: String?
@@ -220,8 +377,13 @@ class PolarManager: NSObject, ObservableObject {
         api.deviceInfoObserver = self
         api.deviceFeaturesObserver = self
         api.powerStateObserver = self
-        
+
         isBluetoothOn = api.isBlePowered
+
+        // Set initial error message if Bluetooth is off
+        if !isBluetoothOn {
+            errorMessage = "Bluetooth is turned off"
+        }
     }
     
     // MARK: - Device Search
@@ -292,7 +454,51 @@ class PolarManager: NSObject, ObservableObject {
     private func updateConnectedSensorsList() {
         connectedSensors = Array(sensors.values).sorted { $0.id < $1.id }
     }
-    
+
+    // MARK: - Global Recording Controls
+
+    func startAllRecordings() {
+        globalRecordingState = .recording
+        for sensor in sensors.values {
+            sensor.startRecording()
+        }
+    }
+
+    func pauseAllRecordings() {
+        globalRecordingState = .paused
+        for sensor in sensors.values {
+            sensor.pauseRecording()
+        }
+    }
+
+    func stopAllRecordings() {
+        globalRecordingState = .idle
+        for sensor in sensors.values {
+            sensor.stopRecording()
+        }
+    }
+
+    var recordingStats: (recording: Int, paused: Int, idle: Int) {
+        var stats = (recording: 0, paused: 0, idle: 0)
+        for sensor in sensors.values {
+            switch sensor.recordingState {
+            case .recording: stats.recording += 1
+            case .paused: stats.paused += 1
+            case .idle: stats.idle += 1
+            }
+        }
+        return stats
+    }
+
+    var anyRecording: Bool {
+        sensors.values.contains { $0.recordingState == .recording }
+    }
+
+    var globalSessionDuration: TimeInterval {
+        // Return longest session duration among all sensors
+        sensors.values.map { $0.sessionDuration }.max() ?? 0
+    }
+
     // MARK: - Data Streaming
     private func startHeartRateStream(for deviceId: String) {
         guard let sensor = sensors[deviceId] else { return }
@@ -449,9 +655,13 @@ extension PolarManager: PolarBleApiPowerStateObserver {
     func blePowerOn() {
         DispatchQueue.main.async {
             self.isBluetoothOn = true
+            // Clear Bluetooth error message when Bluetooth turns on
+            if self.errorMessage == "Bluetooth is turned off" {
+                self.errorMessage = nil
+            }
         }
     }
-    
+
     func blePowerOff() {
         DispatchQueue.main.async {
             self.isBluetoothOn = false

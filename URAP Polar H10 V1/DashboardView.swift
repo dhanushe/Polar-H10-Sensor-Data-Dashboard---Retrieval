@@ -11,16 +11,20 @@ import PolarBleSdk
 
 struct DashboardView: View {
     @StateObject private var polarManager = PolarManager()
+    @StateObject private var recordingsManager = RecordingsManager.shared
     @State private var showDeviceList = false
     @State private var currentTime = Date()
+    @State private var showIndividualRecordingAlert = false
+    @State private var showRecordingSavedAlert = false
+    @Environment(\.colorScheme) var colorScheme
 
     let timer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         NavigationView {
             ZStack {
-                // Background gradient
-                AppTheme.darkGradient
+                // Background gradient - adapts to light/dark mode
+                AppTheme.adaptiveBackground(for: colorScheme)
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
@@ -66,7 +70,182 @@ struct DashboardView: View {
                     currentTime = Date()
                 }
             }
+            .overlay(alignment: .bottom) {
+                VStack(spacing: AppTheme.spacing.sm) {
+                    if showIndividualRecordingAlert {
+                        individualRecordingToast
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                            .animation(.spring(response: 0.5, dampingFraction: 0.7), value: showIndividualRecordingAlert)
+                            .onAppear {
+                                // Auto-dismiss after 3 seconds
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                                    withAnimation {
+                                        showIndividualRecordingAlert = false
+                                    }
+                                }
+                            }
+                            .onTapGesture {
+                                withAnimation {
+                                    showIndividualRecordingAlert = false
+                                }
+                            }
+                    }
+
+                    if showRecordingSavedAlert {
+                        recordingSavedToast
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                            .animation(.spring(response: 0.5, dampingFraction: 0.7), value: showRecordingSavedAlert)
+                            .onAppear {
+                                // Auto-dismiss after 3 seconds
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                                    withAnimation {
+                                        showRecordingSavedAlert = false
+                                    }
+                                }
+                            }
+                            .onTapGesture {
+                                withAnimation {
+                                    showRecordingSavedAlert = false
+                                }
+                            }
+                    }
+                }
+                .padding(.bottom, 100)
+                .padding(.horizontal, AppTheme.spacing.lg)
+            }
         }
+    }
+
+    // MARK: - Toast Alert
+
+    private var individualRecordingToast: some View {
+        GlassCard {
+            HStack(spacing: AppTheme.spacing.md) {
+                // Warning icon
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.orange, Color.orange.opacity(0.7)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 44, height: 44)
+
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.title3)
+                        .foregroundColor(.white)
+                }
+
+                // Message
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Individual Recording Active")
+                        .font(.headline)
+                        .fontWeight(.bold)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+
+                    Text("Stop individual sensor recordings before starting group recording")
+                        .font(.caption)
+                        .foregroundColor(.primary.opacity(0.7))
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.8)
+                }
+
+                Spacer(minLength: 8)
+
+                // Dismiss button
+                Button(action: {
+                    withAnimation {
+                        showIndividualRecordingAlert = false
+                    }
+                }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundColor(.secondary.opacity(0.5))
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+            .padding(AppTheme.spacing.lg)
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.cornerRadius.lg)
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.orange, Color.orange.opacity(0.5)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1.5
+                )
+        )
+        .shadow(color: Color.orange.opacity(0.3), radius: 20, x: 0, y: 10)
+    }
+
+    private var recordingSavedToast: some View {
+        GlassCard {
+            HStack(spacing: AppTheme.spacing.md) {
+                // Success icon
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.green, Color.green.opacity(0.7)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 44, height: 44)
+
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title3)
+                        .foregroundColor(.white)
+                }
+
+                // Message
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Recording Saved!")
+                        .font(.headline)
+                        .fontWeight(.bold)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+
+                    Text("View in Recordings tab")
+                        .font(.caption)
+                        .foregroundColor(.primary.opacity(0.7))
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 8)
+
+                // Dismiss button
+                Button(action: {
+                    withAnimation {
+                        showRecordingSavedAlert = false
+                    }
+                }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundColor(.secondary.opacity(0.5))
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+            .padding(AppTheme.spacing.lg)
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.cornerRadius.lg)
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.green, Color.green.opacity(0.5)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1.5
+                )
+        )
+        .shadow(color: Color.green.opacity(0.3), radius: 20, x: 0, y: 10)
     }
 
     // MARK: - Global Recording Controls
@@ -103,7 +282,7 @@ struct DashboardView: View {
                 Text(formatDuration(currentDuration))
                     .font(.caption)
                     .fontWeight(.semibold)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.primary.opacity(0.7))
                     .monospacedDigit()
             }
         }
@@ -151,7 +330,12 @@ struct DashboardView: View {
             isDisabled: disabled,
             isCompact: true
         ) {
-            polarManager.startAllRecordings()
+            // Check if any sensors are recording individually
+            if polarManager.hasIndividualRecordings {
+                showIndividualRecordingAlert = true
+            } else {
+                polarManager.startAllRecordings()
+            }
         }
     }
 
@@ -175,6 +359,11 @@ struct DashboardView: View {
             isDisabled: polarManager.globalRecordingState == .idle,
             isCompact: true
         ) {
+            // Capture recording before stopping
+            if polarManager.globalRecordingState == .recording {
+                recordingsManager.captureRecording(from: polarManager)
+                showRecordingSavedAlert = true
+            }
             polarManager.stopAllRecordings()
         }
     }
@@ -248,7 +437,7 @@ struct DashboardView: View {
 
                 Text("Connect your Polar H10 to start\nmonitoring heart rate variability")
                     .font(.body)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.primary.opacity(0.7))
                     .multilineTextAlignment(.center)
             }
 
@@ -354,7 +543,7 @@ struct ModernSensorCard: View {
                         Text(sensor.displayId)
                             .font(.caption)
                             .fontWeight(.medium)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.primary.opacity(0.6))
                             .lineLimit(1)
                     }
 
@@ -391,7 +580,7 @@ struct ModernSensorCard: View {
 
                     Text("BPM")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.primary.opacity(0.6))
                         .padding(.bottom, 4)
                         .lineLimit(1)
                 }
@@ -402,7 +591,7 @@ struct ModernSensorCard: View {
                     Text("\(sensor.rrInterval)ms • \(sensor.batteryLevel)%")
                         .font(.caption)
                         .fontWeight(.medium)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.primary.opacity(0.6))
                         .lineLimit(1)
 
                     Spacer()
@@ -499,11 +688,12 @@ struct MetricChip: View {
 struct DeviceListView: View {
     @ObservedObject var polarManager: PolarManager
     @Binding var isPresented: Bool
+    @Environment(\.colorScheme) var colorScheme
 
     var body: some View {
         NavigationView {
             ZStack {
-                AppTheme.darkGradient
+                AppTheme.adaptiveBackground(for: colorScheme)
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
@@ -561,7 +751,7 @@ struct DeviceListView: View {
                 .tint(AppTheme.accentBlue)
             Text("Scanning for sensors...")
                 .font(.subheadline)
-                .foregroundColor(.secondary)
+                .foregroundColor(.primary.opacity(0.7))
         }
         .frame(maxWidth: .infinity)
         .padding()
@@ -599,7 +789,7 @@ struct DeviceListView: View {
 
             Text("Make sure your Polar H10 is nearby and powered on")
                 .font(.subheadline)
-                .foregroundColor(.secondary)
+                .foregroundColor(.primary.opacity(0.7))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
 
@@ -665,7 +855,7 @@ struct ModernDeviceRow: View {
 
             Text(device.deviceId)
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundColor(.primary.opacity(0.6))
                 .lineLimit(1)
         }
     }

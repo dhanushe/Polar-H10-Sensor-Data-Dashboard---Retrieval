@@ -18,20 +18,36 @@ import Combine
 import PolarBleSdk
 import RxSwift
 import CoreBluetooth
+import UIKit
+import ActivityKit
 
 // MARK: - Data Point Models
-struct HeartRateDataPoint: Identifiable {
-    let id = UUID()
+struct HeartRateDataPoint: Identifiable, Codable {
+    let id: UUID
     let timestamp: Date
     let monotonicTimestamp: TimeInterval  // High-precision monotonic time from CACurrentMediaTime()
     let value: UInt8
+
+    init(timestamp: Date, monotonicTimestamp: TimeInterval, value: UInt8) {
+        self.id = UUID()
+        self.timestamp = timestamp
+        self.monotonicTimestamp = monotonicTimestamp
+        self.value = value
+    }
 }
 
-struct RRIntervalDataPoint: Identifiable {
-    let id = UUID()
+struct RRIntervalDataPoint: Identifiable, Codable {
+    let id: UUID
     let timestamp: Date
     let monotonicTimestamp: TimeInterval  // High-precision monotonic time from CACurrentMediaTime()
     let value: UInt16
+
+    init(timestamp: Date, monotonicTimestamp: TimeInterval, value: UInt16) {
+        self.id = UUID()
+        self.timestamp = timestamp
+        self.monotonicTimestamp = monotonicTimestamp
+        self.value = value
+    }
 }
 
 // MARK: - HRV Window Configuration
@@ -111,7 +127,7 @@ class ConnectedSensor: ObservableObject, Identifiable {
     private var heartRateSum: UInt64 = 0
 
     // High-precision timing for research-grade accuracy
-    private var timingSession: TimingSession?
+    var timingSession: TimingSession?
     var sessionStartMonotonicTime: TimeInterval?  // Monotonic timestamp of session start
 
     // HRV metrics
@@ -158,22 +174,31 @@ class ConnectedSensor: ObservableObject, Identifiable {
     // MARK: - Recording Controls
 
     func startRecording() {
+        let previousState = recordingState
         recordingState = .recording
 
-        // Initialize or resume timing session
-        if timingSession == nil {
+        // Create fresh timing session when starting new recording (from idle)
+        // Keep existing session when resuming (from paused)
+        if previousState == .idle {
+            // Starting a new recording - reset timer to 00:00
             timingSession = TimingSession(sessionId: id)
             sessionStartTime = timingSession?.startWallTime
             sessionStartMonotonicTime = timingSession?.startMonotonicTime
+            print("🎬 Started new recording session for \(displayId) - timer reset to 00:00")
+        } else if previousState == .paused {
+            // Resuming from pause - keep existing timing session
+            print("▶️ Resumed recording session for \(displayId) - timer continuing from pause")
         }
     }
 
     func pauseRecording() {
         recordingState = .paused
+        print("⏸ Paused recording session for \(displayId)")
     }
 
     func stopRecording() {
         recordingState = .idle
+        print("⏹ Stopped recording session for \(displayId)")
         // Note: We keep the data and timing session intact so user can review
         // Call resetMetrics() if you want to clear everything
     }
@@ -353,11 +378,29 @@ class PolarManager: NSObject, ObservableObject {
     // MARK: - Error Handling
     @Published var errorMessage: String?
 
+    // MARK: - Live Activity Manager
+    private var liveActivityManager: LiveActivityManager? {
+        if #available(iOS 16.1, *) {
+            return LiveActivityManager.shared
+        }
+        return nil
+    }
+
     // MARK: - Private Properties
     private var api: PolarBleApi!
     private let disposeBag = DisposeBag()
     private var sensors: [String: ConnectedSensor] = [:] // deviceId -> sensor
-    
+
+    // MARK: - Background Support
+    private var devicesToMaintain: Set<String> = [] // Devices that should stay connected
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var connectionHealthTimer: Timer?
+    private var reconnectionAttempts: [String: Int] = [:] // deviceId -> attempt count
+    private let maxReconnectionAttempts = 5
+
+    // Singleton instance for app lifecycle access
+    static let shared = PolarManager()
+
     // MARK: - Initialization
     override init() {
         super.init()
@@ -425,17 +468,26 @@ class PolarManager: NSObject, ObservableObject {
         sensors[device.deviceId] = sensor
         updateConnectedSensorsList()
 
+        // Add to devices to maintain connection for
+        devicesToMaintain.insert(device.deviceId)
+        reconnectionAttempts[device.deviceId] = 0
+
         do {
             try api.connectToDevice(device.deviceId)
         } catch {
             errorMessage = "Connection failed: \(error.localizedDescription)"
             sensors.removeValue(forKey: device.deviceId)
+            devicesToMaintain.remove(device.deviceId)
             updateConnectedSensorsList()
         }
     }
 
     func disconnect(deviceId: String) {
         guard let sensor = sensors[deviceId] else { return }
+
+        // Remove from devices to maintain
+        devicesToMaintain.remove(deviceId)
+        reconnectionAttempts.removeValue(forKey: deviceId)
 
         // Stop streaming
         sensor.hrDisposable?.dispose()
@@ -453,6 +505,12 @@ class PolarManager: NSObject, ObservableObject {
 
     private func updateConnectedSensorsList() {
         connectedSensors = Array(sensors.values).sorted { $0.id < $1.id }
+
+        // Update Live Activity sensor count if recording
+        if globalRecordingState == .recording {
+            let recordingSensorCount = sensors.values.filter { $0.recordingState == .recording }.count
+            liveActivityManager?.updateSensorCount(recordingSensorCount)
+        }
     }
 
     // MARK: - Global Recording Controls
@@ -462,6 +520,11 @@ class PolarManager: NSObject, ObservableObject {
         for sensor in sensors.values {
             sensor.startRecording()
         }
+
+        // Start Live Activity to show in Dynamic Island
+        let recordingSensorCount = sensors.values.filter { $0.recordingState == .recording }.count
+        liveActivityManager?.startRecordingActivity(sensorCount: recordingSensorCount, recordingState: "Recording")
+        print("📱 Started Live Activity with \(recordingSensorCount) sensors")
     }
 
     func pauseAllRecordings() {
@@ -469,6 +532,10 @@ class PolarManager: NSObject, ObservableObject {
         for sensor in sensors.values {
             sensor.pauseRecording()
         }
+
+        // End Live Activity when paused
+        liveActivityManager?.endActivity()
+        print("📱 Ended Live Activity (paused)")
     }
 
     func stopAllRecordings() {
@@ -476,6 +543,10 @@ class PolarManager: NSObject, ObservableObject {
         for sensor in sensors.values {
             sensor.stopRecording()
         }
+
+        // End Live Activity when stopped
+        liveActivityManager?.endActivity()
+        print("📱 Ended Live Activity (stopped)")
     }
 
     var recordingStats: (recording: Int, paused: Int, idle: Int) {
@@ -494,12 +565,186 @@ class PolarManager: NSObject, ObservableObject {
         sensors.values.contains { $0.recordingState == .recording }
     }
 
+    /// Checks if any sensors are recording individually (not from "Start All")
+    /// Returns true if sensors are recording but global state is idle
+    var hasIndividualRecordings: Bool {
+        globalRecordingState == .idle && sensors.values.contains { $0.recordingState == .recording }
+    }
+
     var globalSessionDuration: TimeInterval {
         // Return longest session duration among all sensors
         sensors.values.map { $0.sessionDuration }.max() ?? 0
     }
 
+    // MARK: - Background Lifecycle Management
+
+    func handleAppBackground() {
+        print("📱 App entering background - requesting extended background time")
+
+        // Request background execution time from iOS
+        backgroundTask = UIApplication.shared.beginBackgroundTask { [weak self] in
+            print("⏰ Background task expired - cleaning up")
+            self?.endBackgroundTask()
+        }
+
+        // Start monitoring connection health
+        startConnectionHealthMonitoring()
+
+        print("✅ Background mode activated - connections will be maintained")
+    }
+
+    func handleAppForeground() {
+        print("📱 App entering foreground - checking connection health")
+
+        // Stop background task
+        endBackgroundTask()
+
+        // Stop health monitoring timer
+        stopConnectionHealthMonitoring()
+
+        // Check all connections and reconnect if needed
+        reconnectLostDevices()
+
+        // Restart all data streams to ensure they're active
+        // This is critical because streams may have been suspended in background
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.restartStreamsForConnectedDevices()
+        }
+
+        print("✅ Foreground mode activated")
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
+    }
+
+    // MARK: - Connection Health Monitoring
+
+    private func startConnectionHealthMonitoring() {
+        // Check connection health every 10 seconds in background
+        connectionHealthTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+            self?.checkConnectionHealth()
+        }
+    }
+
+    private func stopConnectionHealthMonitoring() {
+        connectionHealthTimer?.invalidate()
+        connectionHealthTimer = nil
+    }
+
+    private func checkConnectionHealth() {
+        print("🔍 Checking connection health...")
+
+        for deviceId in devicesToMaintain {
+            guard let sensor = sensors[deviceId] else {
+                print("⚠️ Sensor \(deviceId) not found - attempting reconnection")
+                attemptReconnection(deviceId: deviceId)
+                continue
+            }
+
+            if sensor.connectionState != .connected {
+                print("⚠️ Sensor \(deviceId) disconnected - attempting reconnection")
+                attemptReconnection(deviceId: deviceId)
+            } else {
+                // Reset reconnection attempts for healthy connections
+                reconnectionAttempts[deviceId] = 0
+                print("✅ Sensor \(deviceId) healthy")
+            }
+        }
+    }
+
+    // MARK: - Automatic Reconnection
+
+    private func reconnectLostDevices() {
+        print("🔄 Checking for lost connections...")
+
+        for deviceId in devicesToMaintain {
+            guard let sensor = sensors[deviceId] else {
+                print("⚠️ Sensor \(deviceId) lost - will attempt reconnection")
+                attemptReconnection(deviceId: deviceId)
+                continue
+            }
+
+            if sensor.connectionState != .connected {
+                print("⚠️ Sensor \(deviceId) not connected - attempting reconnection")
+                attemptReconnection(deviceId: deviceId)
+            }
+        }
+    }
+
+    private func attemptReconnection(deviceId: String) {
+        let attempts = reconnectionAttempts[deviceId] ?? 0
+
+        guard attempts < maxReconnectionAttempts else {
+            print("❌ Max reconnection attempts reached for \(deviceId)")
+            errorMessage = "Failed to reconnect to device \(deviceId.suffix(6))"
+            return
+        }
+
+        reconnectionAttempts[deviceId] = attempts + 1
+
+        // Calculate exponential backoff delay
+        let delay = Double(attempts) * 2.0
+
+        print("🔄 Reconnection attempt \(attempts + 1)/\(maxReconnectionAttempts) for \(deviceId) in \(delay)s")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self = self else { return }
+
+            // Check if we should still try to reconnect
+            guard self.devicesToMaintain.contains(deviceId) else {
+                print("⏭️ Skipping reconnection - device no longer in maintain list")
+                return
+            }
+
+            do {
+                print("🔌 Attempting to reconnect to \(deviceId)...")
+                try self.api.connectToDevice(deviceId)
+            } catch {
+                print("❌ Reconnection failed: \(error.localizedDescription)")
+
+                // Try again if we haven't exceeded max attempts
+                if attempts + 1 < self.maxReconnectionAttempts {
+                    self.attemptReconnection(deviceId: deviceId)
+                } else {
+                    self.errorMessage = "Failed to reconnect to device \(deviceId.suffix(6))"
+                }
+            }
+        }
+    }
+
     // MARK: - Data Streaming
+
+    /// Restart streams for all connected devices (used after returning from background)
+    private func restartStreamsForConnectedDevices() {
+        print("🔄 Restarting data streams for all connected devices...")
+
+        for (deviceId, sensor) in sensors {
+            if sensor.connectionState == .connected {
+                restartStreams(for: deviceId)
+            }
+        }
+    }
+
+    /// Restart data streams for a specific device
+    private func restartStreams(for deviceId: String) {
+        guard let sensor = sensors[deviceId] else { return }
+
+        print("🔄 Restarting streams for device \(deviceId)")
+
+        // Dispose existing streams to avoid duplicates
+        sensor.hrDisposable?.dispose()
+        sensor.ppiDisposable?.dispose()
+
+        // Small delay to ensure clean disposal
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.startHeartRateStream(for: deviceId)
+            self?.startRRIntervalStream(for: deviceId)
+        }
+    }
+
     private func startHeartRateStream(for deviceId: String) {
         guard let sensor = sensors[deviceId] else { return }
 
@@ -571,6 +816,19 @@ extension PolarManager: PolarBleApiObserver {
         DispatchQueue.main.async {
             if let sensor = self.sensors[polarDeviceInfo.deviceId] {
                 sensor.connectionState = .connected
+
+                // Reset reconnection attempts on successful connection
+                self.reconnectionAttempts[polarDeviceInfo.deviceId] = 0
+
+                // If this is a reconnection (device is in maintain list but streams might be stale),
+                // restart the streams to ensure data flows
+                if self.devicesToMaintain.contains(polarDeviceInfo.deviceId) {
+                    print("✅ Device \(polarDeviceInfo.deviceId) connected - will restart streams")
+                    // Small delay to ensure connection is fully established
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                        self?.restartStreams(for: polarDeviceInfo.deviceId)
+                    }
+                }
             }
             self.errorMessage = nil
             self.updateConnectedSensorsList()
@@ -581,11 +839,17 @@ extension PolarManager: PolarBleApiObserver {
         DispatchQueue.main.async {
             if let sensor = self.sensors[polarDeviceInfo.deviceId] {
                 sensor.connectionState = .disconnected
-                sensor.resetMetrics()
+                // Don't reset metrics - we want to preserve data during reconnection
             }
 
             if pairingError {
                 self.errorMessage = "Pairing error with \(polarDeviceInfo.name)"
+            }
+
+            // If this device should be maintained, attempt reconnection
+            if self.devicesToMaintain.contains(polarDeviceInfo.deviceId) {
+                print("🔄 Device \(polarDeviceInfo.deviceId) disconnected unexpectedly - will reconnect")
+                self.attemptReconnection(deviceId: polarDeviceInfo.deviceId)
             }
         }
     }

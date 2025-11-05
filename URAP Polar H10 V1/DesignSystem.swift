@@ -114,6 +114,31 @@ struct AppTheme {
     static func elevatedBackgroundColor(for colorScheme: ColorScheme) -> Color {
         colorScheme == .dark ? darkElevatedBackground : lightElevatedBackground
     }
+
+    // MARK: - Adaptive Gradients and Backgrounds
+
+    /// Returns the appropriate background gradient based on color scheme
+    static func adaptiveBackground(for colorScheme: ColorScheme) -> LinearGradient {
+        colorScheme == .dark ? darkGradient : lightGradient
+    }
+
+    /// Returns the appropriate card background color with proper opacity
+    static func adaptiveCardBackground(for colorScheme: ColorScheme) -> Color {
+        if colorScheme == .dark {
+            return Color(hex: "2C2C2E").opacity(0.9)
+        } else {
+            return Color(hex: "FFFFFF").opacity(0.95)
+        }
+    }
+
+    /// Returns the appropriate glass material color
+    static func adaptiveGlassMaterial(for colorScheme: ColorScheme) -> Color {
+        if colorScheme == .dark {
+            return Color.white.opacity(0.05)
+        } else {
+            return Color.black.opacity(0.03)
+        }
+    }
 }
 
 // MARK: - Color Extension for Hex
@@ -149,6 +174,7 @@ extension Color {
 
 struct GlassCard<Content: View>: View {
     let content: Content
+    @Environment(\.colorScheme) var colorScheme
 
     init(@ViewBuilder content: () -> Content) {
         self.content = content()
@@ -159,15 +185,23 @@ struct GlassCard<Content: View>: View {
             .background(
                 ZStack {
                     RoundedRectangle(cornerRadius: AppTheme.cornerRadius.lg)
-                        .fill(AppTheme.cardBackground)
+                        .fill(AppTheme.adaptiveCardBackground(for: colorScheme))
                         .overlay(
                             RoundedRectangle(cornerRadius: AppTheme.cornerRadius.lg)
-                                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                                .stroke(strokeColor, lineWidth: 1)
                         )
-                        .shadow(color: Color.black.opacity(0.3), radius: 10, x: 0, y: 5)
+                        .shadow(color: shadowColor, radius: 10, x: 0, y: 5)
                 }
             )
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: AppTheme.cornerRadius.lg))
+    }
+
+    private var strokeColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.1) : Color.black.opacity(0.08)
+    }
+
+    private var shadowColor: Color {
+        colorScheme == .dark ? Color.black.opacity(0.3) : Color.black.opacity(0.1)
     }
 }
 
@@ -180,6 +214,7 @@ struct GradientButton: View {
     let action: () -> Void
     var isDisabled: Bool = false
     var isCompact: Bool = false
+    @Environment(\.colorScheme) var colorScheme
 
     init(
         title: String,
@@ -211,7 +246,7 @@ struct GradientButton: View {
                     .minimumScaleFactor(0.7)
                     .lineLimit(1)
             }
-            .foregroundColor(.white)
+            .foregroundColor(textColor)
             .padding(.horizontal, isCompact ? 12 : 20)
             .padding(.vertical, isCompact ? 8 : 12)
             .frame(maxWidth: .infinity)
@@ -231,6 +266,13 @@ struct GradientButton: View {
         .scaleEffect(isDisabled ? 0.95 : 1.0)
         .opacity(isDisabled ? 0.6 : 1.0)
         .animation(.easeInOut(duration: 0.2), value: isDisabled)
+    }
+
+    /// Adaptive text color for better contrast in both light and dark modes
+    private var textColor: Color {
+        // In light mode, use very dark text for better contrast on colored gradients
+        // In dark mode, keep white text
+        colorScheme == .dark ? .white : Color(red: 0.1, green: 0.1, blue: 0.1)
     }
 }
 
@@ -266,7 +308,7 @@ struct AnimatedMetricView: View {
 
             Text(label)
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundColor(.primary.opacity(0.7))
         }
     }
 }
@@ -372,13 +414,13 @@ struct StatRow: View {
             if let icon = icon {
                 Image(systemName: icon)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.primary.opacity(0.6))
                     .frame(width: 16)
             }
 
             Text(label)
                 .font(.subheadline)
-                .foregroundColor(.secondary)
+                .foregroundColor(.primary.opacity(0.7))
                 .lineLimit(1)
 
             Spacer()

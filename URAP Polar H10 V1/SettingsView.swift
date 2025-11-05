@@ -9,13 +9,13 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var settings = AppSettings.shared
-    @Environment(\.colorScheme) var systemColorScheme
+    @Environment(\.colorScheme) var colorScheme
 
     var body: some View {
         NavigationView {
             ZStack {
-                // Background gradient
-                AppTheme.darkGradient
+                // Background gradient - adapts to light/dark mode
+                AppTheme.adaptiveBackground(for: colorScheme)
                     .ignoresSafeArea()
 
                 ScrollView {
@@ -51,7 +51,7 @@ struct SettingsView: View {
 
                 Text("Research-Grade HRV Analysis")
                     .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.primary.opacity(0.7))
                     .lineLimit(1)
             }
             .padding(AppTheme.spacing.lg)
@@ -81,7 +81,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: AppTheme.spacing.sm) {
                     Text("Default Analysis Window")
                         .font(.subheadline)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.primary.opacity(0.7))
 
                     Picker("Default Window", selection: $settings.defaultHRVWindowEnum) {
                         ForEach(HRVWindow.allCases) { window in
@@ -94,7 +94,7 @@ struct SettingsView: View {
 
                     Text(windowDescription(settings.defaultHRVWindowEnum))
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.primary.opacity(0.7))
                         .padding(.top, AppTheme.spacing.xs)
                 }
             }
@@ -146,7 +146,7 @@ struct SettingsView: View {
 
                 Text("Built for advanced HRV research and analysis with the Polar H10 heart rate monitor.")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.primary.opacity(0.7))
                     .multilineTextAlignment(.leading)
             }
             .padding(AppTheme.spacing.lg)
@@ -191,7 +191,7 @@ struct FeatureRow: View {
 
                 Text(description)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.primary.opacity(0.7))
                     .lineLimit(2)
             }
         }

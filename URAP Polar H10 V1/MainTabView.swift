@@ -9,6 +9,7 @@ import SwiftUI
 
 struct MainTabView: View {
     @State private var selectedTab = 0
+    @Environment(\.colorScheme) var colorScheme
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -19,25 +20,35 @@ struct MainTabView: View {
                 }
                 .tag(0)
 
+            // Recordings Tab
+            RecordingsListView()
+                .tabItem {
+                    Label("Recordings", systemImage: "folder.fill")
+                }
+                .tag(1)
+
             // Settings Tab
             SettingsView()
                 .tabItem {
                     Label("Settings", systemImage: "gear")
                 }
-                .tag(1)
+                .tag(2)
         }
         .accentColor(AppTheme.accentBlue)
         .onAppear {
-            setupTabBarAppearance()
+            setupTabBarAppearance(for: colorScheme)
+        }
+        .onChange(of: colorScheme) { _, newScheme in
+            setupTabBarAppearance(for: newScheme)
         }
     }
 
-    private func setupTabBarAppearance() {
+    private func setupTabBarAppearance(for colorScheme: ColorScheme) {
         let appearance = UITabBarAppearance()
 
-        // Glassmorphic background
+        // Glassmorphic background - adapts to light/dark mode
         appearance.configureWithTransparentBackground()
-        appearance.backgroundColor = UIColor(AppTheme.cardBackground)
+        appearance.backgroundColor = UIColor(AppTheme.adaptiveCardBackground(for: colorScheme))
 
         // Selected item - use accent blue
         appearance.stackedLayoutAppearance.selected.iconColor = UIColor(AppTheme.accentBlue)

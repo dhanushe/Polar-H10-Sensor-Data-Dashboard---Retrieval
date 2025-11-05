@@ -16,12 +16,13 @@ struct SensorDetailView: View {
     @State private var selectedHRTimestamp: Date?
     @State private var selectedRRTimestamp: Date?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) var colorScheme
 
     let timer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         ZStack {
-            AppTheme.darkGradient
+            AppTheme.adaptiveBackground(for: colorScheme)
                 .ignoresSafeArea()
 
             ScrollView {
@@ -64,7 +65,7 @@ struct SensorDetailView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Device ID: \(sensor.displayId)")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.primary.opacity(0.7))
 
                     HStack(spacing: 8) {
                         Circle()
@@ -73,14 +74,14 @@ struct SensorDetailView: View {
 
                         Text(sensor.connectionState.displayText)
                             .font(.subheadline)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.primary.opacity(0.7))
 
                         if currentSessionDuration > 0 {
                             Text("•")
-                                .foregroundColor(.secondary)
+                                .foregroundColor(.primary.opacity(0.7))
                             Text(formatDuration(currentSessionDuration))
                                 .font(.subheadline)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(.primary.opacity(0.7))
                                 .monospacedDigit()
                         }
                     }
@@ -157,7 +158,7 @@ struct SensorDetailView: View {
                 if !sensor.isActive {
                     Text("Waiting for data...")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.primary.opacity(0.7))
                 }
             }
             .padding(AppTheme.spacing.lg)
@@ -188,7 +189,7 @@ struct SensorDetailView: View {
                 VStack(alignment: .leading, spacing: AppTheme.spacing.sm) {
                     Text("Analysis Window")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.primary.opacity(0.7))
 
                     Picker("Window", selection: $sensor.hrvWindow) {
                         ForEach(HRVWindow.allCases) { window in
@@ -203,7 +204,7 @@ struct SensorDetailView: View {
                     if sensor.hrvSampleCount > 0 {
                         Text("\(sensor.hrvSampleCount) RR intervals analyzed")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.primary.opacity(0.7))
                     }
                 }
 
@@ -228,10 +229,10 @@ struct SensorDetailView: View {
                 } else {
                     HStack {
                         Image(systemName: "info.circle")
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.primary.opacity(0.7))
                         Text("Collecting data for HRV analysis...")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.primary.opacity(0.7))
                     }
                 }
             }
@@ -282,7 +283,7 @@ struct SensorDetailView: View {
                             // Selection indicator
                             if let selectedHRTimestamp, let selectedValue = findNearestHeartRateValue(for: selectedHRTimestamp) {
                                 RuleMark(x: .value("Selected", selectedHRTimestamp))
-                                    .foregroundStyle(Color.white.opacity(0.5))
+                                    .foregroundStyle(Color.primary.opacity(0.5))
                                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 5]))
 
                                 PointMark(
@@ -369,7 +370,7 @@ struct SensorDetailView: View {
                             // Selection indicator
                             if let selectedRRTimestamp, let selectedValue = findNearestRRIntervalValue(for: selectedRRTimestamp) {
                                 RuleMark(x: .value("Selected", selectedRRTimestamp))
-                                    .foregroundStyle(Color.white.opacity(0.5))
+                                    .foregroundStyle(Color.primary.opacity(0.5))
                                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 5]))
 
                                 PointMark(
@@ -528,7 +529,7 @@ struct QuickStatCard: View {
                 Text(label)
                     .font(.subheadline)
                     .fontWeight(.medium)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.primary.opacity(0.7))
 
                 Text(value)
                     .font(.system(size: 32, weight: .bold, design: .rounded))
@@ -536,7 +537,7 @@ struct QuickStatCard: View {
 
                 Text(unit)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.primary.opacity(0.7))
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, AppTheme.spacing.lg)
@@ -583,7 +584,7 @@ struct HRVMetricDisplay: View {
 
             Text(description)
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundColor(.primary.opacity(0.7))
                 .lineLimit(2)
         }
     }
@@ -602,7 +603,7 @@ struct EmptyChartPlaceholder: View {
 
             Text(message)
                 .font(.subheadline)
-                .foregroundColor(.secondary)
+                .foregroundColor(.primary.opacity(0.7))
         }
         .frame(height: 180)
         .frame(maxWidth: .infinity)
@@ -653,12 +654,12 @@ struct ChartTooltipBubble: View {
 
             Text(unit)
                 .font(.caption2)
-                .foregroundColor(.secondary)
+                .foregroundColor(.primary.opacity(0.7))
                 .lineLimit(1)
 
             Text(timestamp)
                 .font(.caption2)
-                .foregroundColor(.secondary)
+                .foregroundColor(.primary.opacity(0.7))
                 .monospacedDigit()
                 .lineLimit(1)
         }

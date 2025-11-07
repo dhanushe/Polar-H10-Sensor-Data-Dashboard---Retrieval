@@ -18,8 +18,11 @@ class RecordingsStorageManager {
     private let jsonDecoder: JSONDecoder
 
     // Documents directory for recordings
-    private var recordingsDirectory: URL {
-        let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    private var recordingsDirectory: URL? {
+        guard let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            print("❌ Failed to access documents directory")
+            return nil
+        }
         return documentsPath.appendingPathComponent("Recordings", isDirectory: true)
     }
 
@@ -38,10 +41,15 @@ class RecordingsStorageManager {
     // MARK: - Directory Management
 
     private func createRecordingsDirectoryIfNeeded() {
-        if !fileManager.fileExists(atPath: recordingsDirectory.path) {
+        guard let recordingsDir = recordingsDirectory else {
+            print("❌ Cannot create recordings directory - documents path unavailable")
+            return
+        }
+
+        if !fileManager.fileExists(atPath: recordingsDir.path) {
             do {
-                try fileManager.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
-                print("📁 Created recordings directory at: \(recordingsDirectory.path)")
+                try fileManager.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
+                print("📁 Created recordings directory at: \(recordingsDir.path)")
             } catch {
                 print("❌ Failed to create recordings directory: \(error.localizedDescription)")
             }
@@ -52,7 +60,12 @@ class RecordingsStorageManager {
 
     /// Save a recording session to disk
     func saveRecording(_ recording: RecordingSession) -> Result<URL, RecordingStorageError> {
-        let fileURL = recordingsDirectory.appendingPathComponent(recording.fileName)
+        guard let recordingsDir = recordingsDirectory else {
+            print("❌ Cannot save recording - documents directory unavailable")
+            return .failure(.directoryAccessFailed)
+        }
+
+        let fileURL = recordingsDir.appendingPathComponent(recording.fileName)
 
         do {
             let data = try jsonEncoder.encode(recording)
@@ -69,9 +82,14 @@ class RecordingsStorageManager {
 
     /// Load all recording metadata (fast - doesn't load full data)
     func loadAllRecordingMetadata() -> Result<[RecordingSession], RecordingStorageError> {
+        guard let recordingsDir = recordingsDirectory else {
+            print("❌ Cannot load recordings - documents directory unavailable")
+            return .failure(.directoryAccessFailed)
+        }
+
         do {
             let fileURLs = try fileManager.contentsOfDirectory(
-                at: recordingsDirectory,
+                at: recordingsDir,
                 includingPropertiesForKeys: [.creationDateKey],
                 options: [.skipsHiddenFiles]
             ).filter { $0.pathExtension == "json" }
@@ -107,9 +125,14 @@ class RecordingsStorageManager {
 
     /// Load a specific recording by ID
     func loadRecording(withId id: String) -> Result<RecordingSession?, RecordingStorageError> {
+        guard let recordingsDir = recordingsDirectory else {
+            print("❌ Cannot load recording - documents directory unavailable")
+            return .failure(.directoryAccessFailed)
+        }
+
         do {
             let fileURLs = try fileManager.contentsOfDirectory(
-                at: recordingsDirectory,
+                at: recordingsDir,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             ).filter { $0.pathExtension == "json" }
@@ -131,9 +154,14 @@ class RecordingsStorageManager {
 
     /// Delete a recording by ID
     func deleteRecording(withId id: String) -> Result<Void, RecordingStorageError> {
+        guard let recordingsDir = recordingsDirectory else {
+            print("❌ Cannot delete recording - documents directory unavailable")
+            return .failure(.directoryAccessFailed)
+        }
+
         do {
             let fileURLs = try fileManager.contentsOfDirectory(
-                at: recordingsDirectory,
+                at: recordingsDir,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             ).filter { $0.pathExtension == "json" }
@@ -156,20 +184,39 @@ class RecordingsStorageManager {
 
     // MARK: - Update Recording
 
-    /// Update an existing recording (e.g., rename)
+    /// Update an existing recording (e.g., rename) - uses atomic operation to prevent data loss
     func updateRecording(_ recording: RecordingSession) -> Result<Void, RecordingStorageError> {
-        // First delete the old file
-        switch deleteRecording(withId: recording.id) {
-        case .success:
-            // Then save the updated version
-            switch saveRecording(recording) {
-            case .success:
-                return .success(())
-            case .failure(let error):
-                return .failure(error)
+        guard let recordingsDir = recordingsDirectory else {
+            print("❌ Cannot update recording - documents directory unavailable")
+            return .failure(.directoryAccessFailed)
+        }
+
+        let finalURL = recordingsDir.appendingPathComponent(recording.fileName)
+        let tempURL = fileManager.temporaryDirectory.appendingPathComponent(recording.fileName)
+
+        do {
+            // Step 1: Encode recording data
+            let data = try jsonEncoder.encode(recording)
+
+            // Step 2: Write to temporary file atomically
+            try data.write(to: tempURL, options: [.atomic])
+
+            // Step 3: Remove old file if it exists (won't remove temp file if crash happens here)
+            if fileManager.fileExists(atPath: finalURL.path) {
+                try fileManager.removeItem(at: finalURL)
             }
-        case .failure(let error):
-            return .failure(error)
+
+            // Step 4: Move temp file to final location (atomic operation on same filesystem)
+            try fileManager.moveItem(at: tempURL, to: finalURL)
+
+            print("✅ Updated recording atomically: \(recording.name)")
+            return .success(())
+
+        } catch {
+            // Clean up temp file if it exists
+            try? fileManager.removeItem(at: tempURL)
+            print("❌ Failed to update recording: \(error.localizedDescription)")
+            return .failure(.saveFailed(error))
         }
     }
 
@@ -273,9 +320,14 @@ class RecordingsStorageManager {
 
     /// Get storage statistics
     func getStorageInfo() -> StorageInfo {
+        guard let recordingsDir = recordingsDirectory else {
+            print("❌ Cannot get storage info - documents directory unavailable")
+            return StorageInfo(recordingCount: 0, totalSizeBytes: 0)
+        }
+
         do {
             let fileURLs = try fileManager.contentsOfDirectory(
-                at: recordingsDirectory,
+                at: recordingsDir,
                 includingPropertiesForKeys: [.fileSizeKey],
                 options: [.skipsHiddenFiles]
             ).filter { $0.pathExtension == "json" }
@@ -306,6 +358,7 @@ enum RecordingStorageError: LocalizedError {
     case exportFailed(Error)
     case recordingNotFound
     case invalidData
+    case directoryAccessFailed
 
     var errorDescription: String? {
         switch self {
@@ -315,6 +368,8 @@ enum RecordingStorageError: LocalizedError {
             return "Failed to load recordings: \(error.localizedDescription)"
         case .deleteFailed(let error):
             return "Failed to delete recording: \(error.localizedDescription)"
+        case .directoryAccessFailed:
+            return "Cannot access documents directory"
         case .exportFailed(let error):
             return "Failed to export recording: \(error.localizedDescription)"
         case .recordingNotFound:

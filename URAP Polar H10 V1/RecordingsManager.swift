@@ -81,18 +81,26 @@ class RecordingsManager: ObservableObject {
 
         // Capture sensor data
         var sensorRecordings: [SensorRecording] = []
+        var skippedSensors: [String] = []
 
         for sensor in polarManager.connectedSensors {
             if let sensorRecording = SensorRecording.from(sensor: sensor) {
                 sensorRecordings.append(sensorRecording)
             } else {
+                skippedSensors.append(sensor.displayId)
                 print("⚠️ Skipped sensor \(sensor.id) - no data to save")
             }
         }
 
         guard !sensorRecordings.isEmpty else {
-            errorMessage = "No sensor data to save"
+            errorMessage = "No sensor data to save from any connected sensor"
             return
+        }
+
+        // Warn user if some sensors had no data
+        if !skippedSensors.isEmpty {
+            errorMessage = "⚠️ Warning: No data captured from sensor(s): \(skippedSensors.joined(separator: ", "))"
+            print("⚠️ Recording saved with partial data - missing: \(skippedSensors.joined(separator: ", "))")
         }
 
         // Determine session start and end times
@@ -142,12 +150,12 @@ class RecordingsManager: ObservableObject {
 
     /// Rename a recording
     func renameRecording(withId id: String, newName: String) {
-        guard let index = recordings.firstIndex(where: { $0.id == id }) else {
+        guard let recording = recordings.first(where: { $0.id == id }) else {
             errorMessage = "Recording not found"
             return
         }
 
-        var updatedRecording = recordings[index]
+        var updatedRecording = recording
         updatedRecording.name = newName
 
         isLoading = true
@@ -162,9 +170,15 @@ class RecordingsManager: ObservableObject {
 
                 switch result {
                 case .success:
-                    self.recordings[index] = updatedRecording
-                    self.successMessage = "Recording renamed"
-                    print("✅ Renamed recording to: \(newName)")
+                    // Re-fetch index on main thread just before updating to avoid race condition
+                    if let index = self.recordings.firstIndex(where: { $0.id == id }) {
+                        self.recordings[index] = updatedRecording
+                        self.successMessage = "Recording renamed"
+                        print("✅ Renamed recording to: \(newName)")
+                    } else {
+                        print("⚠️ Recording no longer in list: \(id)")
+                        self.errorMessage = "Recording not found"
+                    }
 
                 case .failure(let error):
                     self.errorMessage = error.localizedDescription
@@ -178,13 +192,13 @@ class RecordingsManager: ObservableObject {
 
     /// Delete a recording
     func deleteRecording(withId id: String) {
-        guard let index = recordings.firstIndex(where: { $0.id == id }) else {
+        // Capture recording name before async work
+        guard let recording = recordings.first(where: { $0.id == id }) else {
             errorMessage = "Recording not found"
             return
         }
 
-        let recordingName = recordings[index].name
-
+        let recordingName = recording.name
         isLoading = true
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -197,9 +211,14 @@ class RecordingsManager: ObservableObject {
 
                 switch result {
                 case .success:
-                    self.recordings.remove(at: index)
-                    self.successMessage = "Recording deleted"
-                    print("✅ Deleted recording: \(recordingName)")
+                    // Re-fetch index on main thread just before deletion to avoid race condition
+                    if let index = self.recordings.firstIndex(where: { $0.id == id }) {
+                        self.recordings.remove(at: index)
+                        self.successMessage = "Recording deleted"
+                        print("✅ Deleted recording: \(recordingName)")
+                    } else {
+                        print("⚠️ Recording already removed from list: \(recordingName)")
+                    }
 
                 case .failure(let error):
                     self.errorMessage = error.localizedDescription

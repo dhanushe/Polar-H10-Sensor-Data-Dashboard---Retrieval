@@ -28,16 +28,29 @@ struct RawDataViewerSheet: View {
         sensorColors[selectedSensorIndex % sensorColors.count]
     }
 
-    var selectedSensor: SensorRecording {
-        recording.sensorRecordings[selectedSensorIndex]
+    // Safe access to selected sensor with bounds checking
+    var selectedSensor: SensorRecording? {
+        guard selectedSensorIndex < recording.sensorRecordings.count else {
+            return nil
+        }
+        return recording.sensorRecordings[selectedSensorIndex]
+    }
+
+    // Computed property to check if current selection is valid
+    private var isValidSelection: Bool {
+        selectedSensorIndex < recording.sensorRecordings.count && !recording.sensorRecordings.isEmpty
     }
 
     var filteredData: [DataRow] {
+        guard let sensor = selectedSensor else {
+            return []
+        }
+
         let rows: [DataRow]
 
         switch selectedDataType {
         case .heartRate:
-            rows = selectedSensor.heartRateData.enumerated().map { index, point in
+            rows = sensor.heartRateData.enumerated().map { index, point in
                 DataRow(
                     index: index + 1,
                     timestamp: point.timestamp,
@@ -47,7 +60,7 @@ struct RawDataViewerSheet: View {
                 )
             }
         case .rrInterval:
-            rows = selectedSensor.rrIntervalData.enumerated().map { index, point in
+            rows = sensor.rrIntervalData.enumerated().map { index, point in
                 DataRow(
                     index: index + 1,
                     timestamp: point.timestamp,
@@ -69,9 +82,13 @@ struct RawDataViewerSheet: View {
     }
 
     var dataStats: DataStats {
+        guard let sensor = selectedSensor else {
+            return DataStats(count: 0, min: 0, max: 0, average: 0)
+        }
+
         switch selectedDataType {
         case .heartRate:
-            let values = selectedSensor.heartRateData.map { Double($0.value) }
+            let values = sensor.heartRateData.map { Double($0.value) }
             return DataStats(
                 count: values.count,
                 min: values.min() ?? 0,
@@ -79,7 +96,7 @@ struct RawDataViewerSheet: View {
                 average: values.isEmpty ? 0 : values.reduce(0, +) / Double(values.count)
             )
         case .rrInterval:
-            let values = selectedSensor.rrIntervalData.map { Double($0.value) }
+            let values = sensor.rrIntervalData.map { Double($0.value) }
             return DataStats(
                 count: values.count,
                 min: values.min() ?? 0,
@@ -95,43 +112,75 @@ struct RawDataViewerSheet: View {
                 AppTheme.adaptiveBackground(for: colorScheme)
                     .ignoresSafeArea()
 
-                VStack(spacing: 0) {
-                    // Sensor picker (if multiple sensors)
-                    if recording.sensorRecordings.count > 1 {
-                        sensorPicker
+                if recording.sensorRecordings.isEmpty {
+                    // Error state: No sensors
+                    VStack(spacing: AppTheme.spacing.md) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 50))
+                            .foregroundColor(.secondary)
+                        Text("No Sensor Data Available")
+                            .font(.headline)
+                            .foregroundColor(.primary)
+                        Text("This recording has no sensor data to display.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
                             .padding(.horizontal)
-                            .padding(.top, AppTheme.spacing.sm)
                     }
-
-                    // Scrollable content with sticky header
-                    ScrollView {
-                        VStack(spacing: 0) {
-                            // Data type tabs
-                            dataTypePicker
-                                .padding(.horizontal)
-                                .padding(.vertical, AppTheme.spacing.sm)
-
-                            // Stats header
-                            statsHeader
-                                .padding(.horizontal)
-                                .padding(.bottom, AppTheme.spacing.sm)
-
-                            // Search bar
-                            searchBar
-                                .padding(.horizontal)
-                                .padding(.bottom, AppTheme.spacing.sm)
-
-                            // Data table content
-                            dataTableContent
-
-                            // Action buttons
-                            actionButtons
-                                .padding()
-                        }
+                } else if !isValidSelection {
+                    // Error state: Invalid sensor index
+                    VStack(spacing: AppTheme.spacing.md) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 50))
+                            .foregroundColor(.secondary)
+                        Text("Sensor Not Available")
+                            .font(.headline)
+                            .foregroundColor(.primary)
+                        Text("The selected sensor is no longer available.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
                     }
-                    .safeAreaInset(edge: .top, spacing: 0) {
+                } else {
+                    VStack(spacing: 0) {
+                        // Sensor picker (if multiple sensors)
                         if recording.sensorRecordings.count > 1 {
-                            stickyHeaderView
+                            sensorPicker
+                                .padding(.horizontal)
+                                .padding(.top, AppTheme.spacing.sm)
+                        }
+
+                        // Scrollable content with sticky header
+                        ScrollView {
+                            VStack(spacing: 0) {
+                                // Data type tabs
+                                dataTypePicker
+                                    .padding(.horizontal)
+                                    .padding(.vertical, AppTheme.spacing.sm)
+
+                                // Stats header
+                                statsHeader
+                                    .padding(.horizontal)
+                                    .padding(.bottom, AppTheme.spacing.sm)
+
+                                // Search bar
+                                searchBar
+                                    .padding(.horizontal)
+                                    .padding(.bottom, AppTheme.spacing.sm)
+
+                                // Data table content
+                                dataTableContent
+
+                                // Action buttons
+                                actionButtons
+                                    .padding()
+                            }
+                        }
+                        .safeAreaInset(edge: .top, spacing: 0) {
+                            if recording.sensorRecordings.count > 1 {
+                                stickyHeaderView
+                            }
                         }
                     }
                 }
@@ -146,6 +195,12 @@ struct RawDataViewerSheet: View {
                     .foregroundColor(AppTheme.accentBlue)
                 }
             }
+            .onAppear {
+                // Validate and fix selectedSensorIndex if out of bounds
+                if selectedSensorIndex >= recording.sensorRecordings.count {
+                    selectedSensorIndex = max(0, recording.sensorRecordings.count - 1)
+                }
+            }
         }
     }
 
@@ -158,7 +213,7 @@ struct RawDataViewerSheet: View {
                 .frame(width: 12, height: 12)
                 .shadow(color: currentSensorColor.opacity(0.5), radius: 3, x: 0, y: 1)
 
-            Text(selectedSensor.sensorName)
+            Text(selectedSensor?.sensorName ?? "Unknown Sensor")
                 .font(.subheadline)
                 .fontWeight(.bold)
                 .foregroundColor(.primary)

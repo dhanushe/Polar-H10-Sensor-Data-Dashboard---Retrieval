@@ -142,9 +142,21 @@ class ConnectedSensor: ObservableObject, Identifiable {
     // Maximum data points to keep (5 minutes at ~1Hz)
     private let maxDataPoints = 300
 
+    // Thread-safe queue for statistics updates
+    private let statsQueue: DispatchQueue
+
     init(deviceId: String, deviceName: String) {
         self.id = deviceId
         self.deviceName = deviceName
+        // Create unique queue for this sensor's statistics
+        self.statsQueue = DispatchQueue(label: "com.urap.sensorStats.\(deviceId)", qos: .userInitiated)
+    }
+
+    deinit {
+        // Clean up RxSwift disposables to prevent memory leaks
+        hrDisposable?.dispose()
+        ppiDisposable?.dispose()
+        print("🧹 ConnectedSensor \(id) deallocated - disposables cleaned")
     }
 
     var displayId: String {
@@ -236,16 +248,29 @@ class ConnectedSensor: ObservableObject, Identifiable {
             heartRateHistory.removeFirst(heartRateHistory.count - maxDataPoints)
         }
 
-        // Update statistics
-        if minHeartRate == 0 || hr < minHeartRate {
-            minHeartRate = hr
-        }
-        if hr > maxHeartRate {
-            maxHeartRate = hr
-        }
+        // Update statistics in thread-safe manner
+        statsQueue.async { [weak self] in
+            guard let self = self else { return }
 
-        heartRateSum += UInt64(hr)
-        totalHeartRateSamples += 1
+            // Perform calculations on background queue
+            let needsMinUpdate = self.minHeartRate == 0 || hr < self.minHeartRate
+            let needsMaxUpdate = hr > self.maxHeartRate
+
+            // Update @Published properties on main thread
+            DispatchQueue.main.async {
+                if needsMinUpdate {
+                    self.minHeartRate = hr
+                }
+                if needsMaxUpdate {
+                    self.maxHeartRate = hr
+                }
+            }
+
+            // Update non-published statistics (these are thread-safe as Int operations)
+            // Note: These are accessed atomically, but we use statsQueue for consistency
+            self.heartRateSum += UInt64(hr)
+            self.totalHeartRateSamples += 1
+        }
     }
 
     func addRRIntervalDataPoint(_ rr: UInt16) {
@@ -310,6 +335,19 @@ class ConnectedSensor: ObservableObject, Identifiable {
         // Extract RR interval values
         let values = windowedRR.map { Double($0.value) }
         hrvSampleCount = values.count
+
+        // Safety assertions for development/testing
+        assert(!values.isEmpty, "HRV: values array should not be empty after guard")
+        assert(values.count >= 5, "HRV: requires at least 5 samples after guard")
+        assert(values.allSatisfy { $0 > 0 }, "HRV: all RR interval values must be positive")
+
+        // Defensive check for production (guards against division by zero)
+        guard values.count > 0 else {
+            print("⚠️ HRV calculation error: empty values array")
+            sdnn = 0
+            rmssd = 0
+            return
+        }
 
         // Calculate SDNN (Standard Deviation of NN intervals)
         let mean = values.reduce(0, +) / Double(values.count)
@@ -387,13 +425,14 @@ class PolarManager: NSObject, ObservableObject {
     }
 
     // MARK: - Private Properties
-    private var api: PolarBleApi!
+    private var api: PolarBleApi?
     private let disposeBag = DisposeBag()
     private var sensors: [String: ConnectedSensor] = [:] // deviceId -> sensor
 
     // MARK: - Background Support
     private var devicesToMaintain: Set<String> = [] // Devices that should stay connected
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private let backgroundTaskQueue = DispatchQueue(label: "com.urap.backgroundTask")
     private var connectionHealthTimer: Timer?
     private var reconnectionAttempts: [String: Int] = [:] // deviceId -> attempt count
     private let maxReconnectionAttempts = 5
@@ -404,7 +443,7 @@ class PolarManager: NSObject, ObservableObject {
     // MARK: - Initialization
     override init() {
         super.init()
-        
+
         // Initialize Polar SDK with required features
         api = PolarBleApiDefaultImpl.polarImplementation(
             DispatchQueue.main,
@@ -414,14 +453,20 @@ class PolarManager: NSObject, ObservableObject {
                 .feature_polar_online_streaming // Real-time streaming (for PPI/RR)
             ]
         )
-        
-        api.polarFilter(true)  // Filter to show only Polar devices
-        api.observer = self
-        api.deviceInfoObserver = self
-        api.deviceFeaturesObserver = self
-        api.powerStateObserver = self
 
-        isBluetoothOn = api.isBlePowered
+        // Defensive check - should never happen, but guard against SDK failure
+        guard let initializedApi = api else {
+            fatalError("❌ CRITICAL: Failed to initialize PolarBleApi - SDK initialization failed")
+        }
+
+        // Configure API observers - safe to force unwrap here since we just validated it
+        api!.polarFilter(true)  // Filter to show only Polar devices
+        api!.observer = self
+        api!.deviceInfoObserver = self
+        api!.deviceFeaturesObserver = self
+        api!.powerStateObserver = self
+
+        isBluetoothOn = initializedApi.isBlePowered
 
         // Set initial error message if Bluetooth is off
         if !isBluetoothOn {
@@ -431,10 +476,15 @@ class PolarManager: NSObject, ObservableObject {
     
     // MARK: - Device Search
     func startScanning() {
+        guard let api = api else {
+            errorMessage = "Bluetooth API not initialized"
+            return
+        }
+
         discoveredDevices.removeAll()
         isScanning = true
         errorMessage = nil
-        
+
         Task {
             do {
                 // Search for devices with "Polar" or "H10" prefix
@@ -460,6 +510,11 @@ class PolarManager: NSObject, ObservableObject {
     
     // MARK: - Connection Management
     func connect(to device: PolarDeviceInfo) {
+        guard let api = api else {
+            errorMessage = "Bluetooth API not initialized"
+            return
+        }
+
         stopScanning()
         errorMessage = nil
 
@@ -484,6 +539,10 @@ class PolarManager: NSObject, ObservableObject {
 
     func disconnect(deviceId: String) {
         guard let sensor = sensors[deviceId] else { return }
+        guard let api = api else {
+            errorMessage = "Bluetooth API not initialized"
+            return
+        }
 
         // Remove from devices to maintain
         devicesToMaintain.remove(deviceId)
@@ -581,10 +640,17 @@ class PolarManager: NSObject, ObservableObject {
     func handleAppBackground() {
         print("📱 App entering background - requesting extended background time")
 
-        // Request background execution time from iOS
-        backgroundTask = UIApplication.shared.beginBackgroundTask { [weak self] in
-            print("⏰ Background task expired - cleaning up")
-            self?.endBackgroundTask()
+        // Request background execution time from iOS (thread-safe)
+        backgroundTaskQueue.sync {
+            guard backgroundTask == .invalid else {
+                print("⚠️ Background task already active")
+                return
+            }
+
+            backgroundTask = UIApplication.shared.beginBackgroundTask { [weak self] in
+                print("⏰ Background task expired - cleaning up")
+                self?.endBackgroundTask()
+            }
         }
 
         // Start monitoring connection health
@@ -615,9 +681,12 @@ class PolarManager: NSObject, ObservableObject {
     }
 
     private func endBackgroundTask() {
-        guard backgroundTask != .invalid else { return }
-        UIApplication.shared.endBackgroundTask(backgroundTask)
-        backgroundTask = .invalid
+        backgroundTaskQueue.sync {
+            guard backgroundTask != .invalid else { return }
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+            print("🛑 Background task ended")
+        }
     }
 
     // MARK: - Connection Health Monitoring
@@ -692,6 +761,10 @@ class PolarManager: NSObject, ObservableObject {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self = self else { return }
+            guard let api = self.api else {
+                print("❌ Bluetooth API not initialized for reconnection")
+                return
+            }
 
             // Check if we should still try to reconnect
             guard self.devicesToMaintain.contains(deviceId) else {
@@ -701,7 +774,7 @@ class PolarManager: NSObject, ObservableObject {
 
             do {
                 print("🔌 Attempting to reconnect to \(deviceId)...")
-                try self.api.connectToDevice(deviceId)
+                try api.connectToDevice(deviceId)
             } catch {
                 print("❌ Reconnection failed: \(error.localizedDescription)")
 
@@ -747,10 +820,14 @@ class PolarManager: NSObject, ObservableObject {
 
     private func startHeartRateStream(for deviceId: String) {
         guard let sensor = sensors[deviceId] else { return }
+        guard let api = api else {
+            print("❌ Bluetooth API not initialized for HR streaming")
+            return
+        }
 
         sensor.hrDisposable = api.startHrStreaming(deviceId)
             .observe(on: MainScheduler.instance)
-            .subscribe { [weak self, weak sensor] event in
+            .subscribe { [weak sensor] event in
                 switch event {
                 case .next(let data):
                     guard let hrData = data.first, let sensor = sensor else { return }
@@ -778,6 +855,10 @@ class PolarManager: NSObject, ObservableObject {
 
     private func startRRIntervalStream(for deviceId: String) {
         guard let sensor = sensors[deviceId] else { return }
+        guard let api = api else {
+            print("❌ Bluetooth API not initialized for PPI streaming")
+            return
+        }
 
         sensor.ppiDisposable = api.startPpiStreaming(deviceId)
             .observe(on: MainScheduler.instance)
